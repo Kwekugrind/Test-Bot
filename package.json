@@ -1,0 +1,8 @@
+{
+  "name": "deriv-alerts",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
