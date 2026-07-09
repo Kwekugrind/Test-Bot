@@ -1,9 +1,12 @@
-name: Deriv Alerts
+name: V75 M15 SMA Alerts
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "1,16,31,46 * * * *"
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   run:
@@ -17,7 +20,20 @@ jobs:
 
       - run: npm install
 
-      - run: node alert.js
+      - name: Run alerts
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: node alert.js
+
+      - name: Save updated state.json
+        run: |
+          if git diff --quiet; then
+            echo "No changes"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add state.json
+            git commit -m "Update state"
+            git push
+          fi
