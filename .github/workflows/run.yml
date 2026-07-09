@@ -5,10 +5,14 @@ on:
     - cron: "1,16,31,46 * * * *"
   workflow_dispatch:
     inputs:
-      test:
-        description: "Send test Telegram message (true/false)"
+      mode:
+        description: "live | test | backtest"
         required: false
-        default: "false"
+        default: "test"
+      backtest_bars:
+        description: "How many M15 candles to scan in backtest"
+        required: false
+        default: "300"
 
 permissions:
   contents: write
@@ -32,7 +36,8 @@ jobs:
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          TEST_MODE: ${{ github.event.inputs.test }}
+          MODE: ${{ github.event.inputs.mode }}
+          BACKTEST_BARS: ${{ github.event.inputs.backtest_bars }}
         run: node alert.js
 
       - name: Save updated state.json (if changed)
