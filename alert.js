@@ -7,7 +7,7 @@ const TG_CHAT_ID = process.env.TG_CHAT_ID;
 // Deriv
 const APP_ID = 1089;
 const SYMBOL = "R_75";
-const TF = 900;     // 15 minutes (M15)
+const TF = 900;     // M15
 const COUNT = 700;  // candles requested from Deriv
 
 function sma(values, length) {
@@ -70,7 +70,7 @@ function getCandles() {
         clearTimeout(timer);
         try { ws.close(); } catch {}
         resolve(data.candles.map(c => ({
-          epoch: c.epoch,   // candle OPEN time (seconds)
+          epoch: c.epoch,   // candle OPEN time
           close: +c.close
         })));
       }
@@ -92,9 +92,6 @@ function fmtUTC(sec) {
     throw new Error("Missing TG_BOT_TOKEN or TG_CHAT_ID. Add them in GitHub Secrets.");
   }
 
-  console.log("Run time (UTC):", new Date().toISOString());
-
-  // Ensure state.json exists
   if (!fs.existsSync("state.json")) {
     fs.writeFileSync("state.json", JSON.stringify({ lastCloseEpoch: 0 }, null, 2));
   }
@@ -105,12 +102,8 @@ function fmtUTC(sec) {
   const candles = await getCandles();
   const nowSec = Math.floor(Date.now() / 1000);
 
-  // Only fully closed candles
   const closed = candles.filter(c => (c.epoch + TF) <= nowSec);
-  if (closed.length < 60) {
-    console.log("Not enough closed candles yet");
-    return;
-  }
+  if (closed.length < 60) return;
 
   const closes = closed.map(c => c.close);
   const sma4 = sma(closes, 4);
@@ -118,27 +111,22 @@ function fmtUTC(sec) {
 
   const newestCloseEpoch = closed[closed.length - 1].epoch + TF;
 
-  // Bootstrap: prevents sending old history
+  // First run: set state, don't alert history
   if (lastCloseEpoch === 0) {
     state.lastCloseEpoch = newestCloseEpoch;
     fs.writeFileSync("state.json", JSON.stringify(state, null, 2));
-    console.log("Bootstrapped state.json; alerts start from next new closed candle.");
     return;
   }
 
-  // Catch-up window: all candle closes since last run
+  // Catch-up window
   const newIdx = [];
   for (let i = 1; i < closed.length; i++) {
     const closeEpoch = closed[i].epoch + TF;
     if (closeEpoch > lastCloseEpoch) newIdx.push(i);
   }
+  if (!newIdx.length) return;
 
-  if (!newIdx.length) {
-    console.log("No new closed candles since last run");
-    return;
-  }
-
-  // Find only the MOST RECENT cross (no spam)
+  // Latest cross only (no spam)
   let lastEvent = null;
   let crossCount = 0;
 
@@ -150,26 +138,19 @@ function fmtUTC(sec) {
 
     if (buy || sell) {
       crossCount++;
-
       const openEpoch = closed[i].epoch;
       const closeEpoch = openEpoch + TF;
-
       lastEvent =
         `${fmtUTC(openEpoch)} (OPEN) | ${fmtUTC(closeEpoch)} (CLOSE) | Close ${closed[i].close} | ` +
         (buy ? "BUY (SMA4 ↑ SMA34)" : "SELL (SMA4 ↓ SMA34)");
     }
   }
 
-  // If Telegram fails, do NOT advance state (so next run retries)
   if (lastEvent) {
     const note = crossCount > 1 ? `\n(${crossCount} crosses since last run; showing latest)` : "";
     await sendTelegram(`V75 (${SYMBOL}) M15 SMA Cross\n${lastEvent}${note}`);
-    console.log("Sent SMA alert (latest only).");
-  } else {
-    console.log("No SMA cross in new candles");
   }
 
-  // Advance state after successful run (or no-signal run)
   state.lastCloseEpoch = newestCloseEpoch;
   fs.writeFileSync("state.json", JSON.stringify(state, null, 2));
 })();
