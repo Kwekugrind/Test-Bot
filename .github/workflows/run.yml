@@ -1,9 +1,18 @@
-name: V75 M15 SMA Alerts (LIVE)
+name: V75 M15 SMA Alerts
 
 on:
   schedule:
     - cron: "1,16,31,46 * * * *"
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "live | backtest | test (scheduled runs are forced to live)"
+        required: false
+        default: "live"
+      backtest_bars:
+        description: "How many M15 candles to scan in backtest"
+        required: false
+        default: "300"
 
 permissions:
   contents: write
@@ -22,6 +31,9 @@ jobs:
           ref: main
           fetch-depth: 0
 
+      - name: Sync main
+        run: git pull --rebase origin main
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -30,10 +42,13 @@ jobs:
       - name: Install deps
         run: npm ci || npm install
 
-      - name: Run alerts (LIVE)
+      - name: Run alerts
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          # Force LIVE on scheduled runs; allow manual mode selection
+          MODE: ${{ github.event_name == 'schedule' && 'live' || github.event.inputs.mode || 'live' }}
+          BACKTEST_BARS: ${{ github.event.inputs.backtest_bars || '300' }}
         run: node alert.js
 
       - name: Save updated state.json (if changed)
