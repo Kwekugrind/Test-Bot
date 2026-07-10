@@ -1,7 +1,12 @@
 name: V75 M15 SMA Alerts (LIVE)
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "manual or cronjob"
+        required: false
+        default: "manual"
 
 permissions:
   contents: write
@@ -33,7 +38,10 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           MODE: live
-        run: node alert.js
+          TRIGGER_SOURCE: ${{ github.event.inputs.source || 'manual' }}
+        run: |
+          echo "Triggered source: $TRIGGER_SOURCE"
+          node alert.js
 
       - name: Save updated state.json (if changed)
         run: |
