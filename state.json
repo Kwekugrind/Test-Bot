@@ -1,4 +1,5 @@
 {
-  "lastProcessedCloseEpoch": 1783774800,
-  "lastAlertCloseEpoch": 1783773900
+  "waitingFor": null,
+  "setupEpoch": null,
+  "lastProcessedEpoch": null
 }
