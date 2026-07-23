@@ -3,9 +3,10 @@ import fetch from "node-fetch";
 import fs from "fs";
 
 // ==================== REPOSITORY CONFIGURATION ====================
-const SYMBOL = "R_100";                     // Test symbol
-const SYMBOL_NAME = "Volatility 100 Index"; // Test symbol name
-const REPO_LABEL = "Test Bot (V100)";       // Test repo label
+// Change these 3 lines for each respective repo:
+const SYMBOL = "R_100";                     // e.g., "R_75", "stpRNG", "R_50", "R_25", "R_100"
+const SYMBOL_NAME = "Volatility 100 Index"; // e.g., "Volatility 75 Index", "Step Index", etc.
+const REPO_LABEL = "Test Bot (V100)";       // e.g., "Lery's Elite Alerts", "Coffee Machine", etc.
 // ==================================================================
 
 const M5 = 300;       // 5 minutes in seconds
@@ -123,6 +124,7 @@ async function getCurrentPrice() {
   });
 }
 
+// SAFE EXECUTION: Automatically locks trades strictly to Demo (VRTC) account
 async function executeTrade(direction, entry, sl, tp1) {
   if (!DERIV_TOKEN) {
     console.log("⚠️ DERIV_API_TOKEN not found. Skipping live execution.");
@@ -146,12 +148,25 @@ async function executeTrade(direction, entry, sl, tp1) {
           return reject(response.error);
         }
 
+        const accounts = response.authorize.account_list || [];
+        const demoAccount = accounts.find(acc => acc.is_virtual === 1 || acc.id.startsWith("VRTC"));
+
+        if (!demoAccount) {
+          console.error("❌ No Demo (Virtual) account found for this token!");
+          ws.close();
+          return reject(new Error("No Demo account found"));
+        }
+
+        const demoLoginId = demoAccount.id;
+        console.log(`🎯 Locked to Demo Account ID: ${demoLoginId}`);
+
         const contractType = direction === "BUY" ? "MULTUP" : "MULTDOWN";
         const stakeUSD = 10; // Default test stake
 
         ws.send(JSON.stringify({
           buy: 1,
           price: stakeUSD,
+          loginid: demoLoginId, // <--- GUARANTEES EXECUTION ON DEMO ONLY
           parameters: {
             contract_type: contractType,
             symbol: SYMBOL,
@@ -169,7 +184,7 @@ async function executeTrade(direction, entry, sl, tp1) {
         if (response.error) {
           console.error("❌ Trade Execution Error:", response.error.message);
         } else {
-          console.log(`✅ Live Trade Executed Successfully! Contract ID: ${response.buy.contract_id}`);
+          console.log(`✅ Live Demo Trade Executed! Contract ID: ${response.buy.contract_id}`);
         }
         ws.close();
         resolve(response);
@@ -316,7 +331,6 @@ async function runSummary(daysBack, title) {
 
     let trades = fs.existsSync("trades.json") ? JSON.parse(fs.readFileSync("trades.json")) : [];
 
-    // Fetch fresh M5 candles for outcome/MACD early-exit checks
     const candles = await fetchCandles(M5, CANDLES);
     if (!candles || candles.length < 50) return;
     const i = candles.length - 2;
@@ -326,7 +340,6 @@ async function runSummary(daysBack, title) {
     if (openTrade) {
       const currentPrice = await getCurrentPrice();
       
-      // Calculate M5 MACD (4, 34, 1) on current closed candle
       const closes = candles.map(c => parseFloat(c.close));
       const emaFast = ema(closes, 4);
       const emaSlow = ema(closes, 34);
@@ -335,7 +348,7 @@ async function runSummary(daysBack, title) {
       let settledResult = null;
       let exitReason = "";
 
-      // NEW CONDITION: Early Exit if M5 MACD crosses zero in the opposite direction
+      // M5 MACD Early Exit Condition
       if (openTrade.direction === "BUY" && macd < 0) {
         settledResult = "LOSS";
         exitReason = "M5 MACD Crossed Below Zero (Early Exit)";
@@ -343,7 +356,6 @@ async function runSummary(daysBack, title) {
         settledResult = "LOSS";
         exitReason = "M5 MACD Crossed Above Zero (Early Exit)";
       } else {
-        // Standard TP1 / SL check
         if (openTrade.direction === "BUY") {
           if (currentPrice >= openTrade.tp1) { settledResult = "WIN"; exitReason = "TP1 Hit"; }
           else if (currentPrice <= openTrade.sl) { settledResult = "LOSS"; exitReason = "Stop Loss Hit"; }
@@ -362,7 +374,7 @@ async function runSummary(daysBack, title) {
         const rMult = settledResult === "WIN" ? `+${openTrade.rr}R` : "-1.0R";
         await sendTelegram(`${icon} ${REPO_LABEL} Trade Result: ${settledResult}\nSymbol: ${SYMBOL_NAME}\nReason: ${exitReason}\nExit Price: ${currentPrice}\nOutcome: ${rMult}`);
       }
-      return; // Exit execution if a trade is active
+      return;
     }
 
     // 2. Run Strategy Engine (Entry Guard)
@@ -485,7 +497,7 @@ async function runSummary(daysBack, title) {
 
       await sendTelegram(message);
 
-      // Execute live trade on Deriv for free
+      // Execute live trade on Deriv Demo account (VRTC)
       await executeTrade(direction, entry, sl, tp1);
 
       trades.push({
