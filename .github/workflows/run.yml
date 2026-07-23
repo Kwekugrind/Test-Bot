@@ -1,60 +1,55 @@
-name: V75 M15 SMA Alerts (LIVE)
+name: V3.0 Signal & Live Trade Bot
 
 on:
   workflow_dispatch:
     inputs:
       source:
-        description: "manual or cronjob"
+        description: "Trigger source"
         required: false
-        default: "manual"
+        default: "cronjob"
+      mode:
+        description: "Bot mode (scan, weekly, monthly)"
+        required: false
+        default: "scan"
+
+concurrency:
+  group: signal-bot-execution
+  cancel-in-progress: false
 
 permissions:
   contents: write
 
-concurrency:
-  group: v75-m15-sma-alerts
-  cancel-in-progress: false
-
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+
     steps:
-      - name: Checkout (main)
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 20
 
-      - name: Install deps
-        run: npm ci || npm install
+      - name: Install Dependencies
+        run: npm install
 
-      - name: Run alerts (LIVE)
+      - name: Run Bot
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          MODE: live
-          TRIGGER_SOURCE: ${{ github.event.inputs.source || 'manual' }}
-        run: |
-          echo "Triggered source: $TRIGGER_SOURCE"
-          node alert.js
+          DERIV_API_TOKEN: ${{ secrets.DERIV_API_TOKEN }}
+          TRIGGER_SOURCE: ${{ github.event.inputs.source || 'cronjob' }}
+          MODE: ${{ github.event.inputs.mode || 'scan' }}
+        run: node alert.js
 
-      - name: Save updated state.json (if changed)
+      - name: Commit state and trades update
         run: |
-          if git diff --quiet; then
-            echo "No state changes"
-            exit 0
-          fi
-
           git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          git add state.json
-          git commit -m "Update state"
-
-          git pull --rebase origin main
+          git config user.email "github-actions@github.com"
+          git add state.json trades.json
+          git diff --cached --quiet && echo "No changes" && exit 0
+          git commit -m "Auto update bot state and trade logs"
           git push origin HEAD:main
