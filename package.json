@@ -1,8 +1,9 @@
 {
-  "name": "v75-alerts",
-  "version": "1.0.0",
-  "private": true,
+  "name": "test-bot-v100",
+  "version": "3.0.0",
+  "type": "module",
   "dependencies": {
-    "ws": "^8.18.0"
+    "node-fetch": "^3.3.2",
+    "ws": "^8.17.0"
   }
 }
