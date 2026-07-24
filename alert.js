@@ -125,11 +125,11 @@ async function getCurrentPrice() {
   });
 }
 
-// SAFE EXECUTION: Automatically locks trades strictly to Demo (VRTC) account
+// SAFE EXECUTION: Automatically locks trades strictly to Demo (VRTC) account and returns contract ID
 async function executeTrade(direction, entry, sl, tp1) {
   if (!DERIV_TOKEN) {
     console.log("⚠️ DERIV_API_TOKEN not found. Skipping live execution.");
-    return;
+    return null;
   }
 
   return new Promise((resolve, reject) => {
@@ -184,9 +184,56 @@ async function executeTrade(direction, entry, sl, tp1) {
       if (response.msg_type === "buy") {
         if (response.error) {
           console.error("❌ Trade Execution Error:", response.error.message);
+          ws.close();
+          resolve(null);
         } else {
-          console.log(`✅ Live Demo Trade Executed! Contract ID: ${response.buy.contract_id}`);
+          const contractId = response.buy.contract_id;
+          console.log(`✅ Live Demo Trade Executed! Contract ID: ${contractId}`);
+          ws.close();
+          resolve(contractId);
         }
+      }
+    });
+
+    ws.on("error", (err) => {
+      reject(err);
+    });
+  });
+}
+
+// EARLY EXIT: Actively sells/closes an open contract on Deriv's server when MACD triggers
+async function closeContract(contractId) {
+  if (!DERIV_TOKEN || !contractId) return;
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket("wss://ws.derivws.com/websockets/v3?app_id=1089");
+    
+    ws.on("open", () => {
+      ws.send(JSON.stringify({ authorize: DERIV_TOKEN }));
+    });
+
+    ws.on("message", (data) => {
+      const response = JSON.parse(data);
+
+      if (response.msg_type === "authorize") {
+        if (response.error) {
+          console.error("❌ Deriv Auth Failed for Closing:", response.error.message);
+          ws.close();
+          return reject(response.error);
+        }
+
+        const accounts = response.authorize.account_list || [];
+        const demoAccount = accounts.find(acc => acc.is_virtual === 1 || acc.id.startsWith("VRTC"));
+        const demoLoginId = demoAccount ? demoAccount.id : null;
+
+        ws.send(JSON.stringify({
+          sell: contractId,
+          price: 0, // Sell at market price
+          loginid: demoLoginId
+        }));
+      }
+
+      if (response.msg_type === "sell") {
+        console.log(`✅ Contract ${contractId} closed successfully via API.`);
         ws.close();
         resolve(response);
       }
@@ -367,6 +414,12 @@ async function runSummary(daysBack, title) {
       }
 
       if (settledResult) {
+        // If it's an early exit via MACD, actively close the live contract on Deriv via API
+        if (openTrade.contractId && exitReason.includes("Early Exit")) {
+          console.log(`🚨 Triggering early exit API closure for contract ID: ${openTrade.contractId}`);
+          await closeContract(openTrade.contractId);
+        }
+
         openTrade.result = settledResult;
         openTrade.closeTime = new Date().toISOString();
         fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
@@ -498,11 +551,12 @@ async function runSummary(daysBack, title) {
 
       await sendTelegram(message);
 
-      // Execute live trade on Deriv Demo account (VRTC)
-      await executeTrade(direction, entry, sl, tp1);
+      // Execute live trade and capture contract ID
+      const contractId = await executeTrade(direction, entry, sl, tp1);
 
       trades.push({
         id: `${SYMBOL}-${isoTime}`,
+        contractId: contractId,
         repo: REPO_LABEL,
         symbol: SYMBOL,
         direction: direction,
