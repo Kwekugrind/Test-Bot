@@ -3,20 +3,20 @@ import fetch from "node-fetch";
 import fs from "fs";
 
 // ==================== REPOSITORY CONFIGURATION ====================
-const SYMBOL = "R_100";                     
-const SYMBOL_NAME = "Volatility 100 Index"; 
-const REPO_LABEL = "Test Bot (V100)";       
-const DERIV_APP_ID = "33VaD9iKIb3cZxguzEkAo";                // REPLACE "1089" WITH YOUR NUMERIC DERIV APP ID HERE
+const SYMBOL = "R_100";                     // e.g., "R_75", "stpRNG", "R_50", "R_25", "R_100"
+const SYMBOL_NAME = "Volatility 100 Index"; // e.g., "Volatility 75 Index", "Step Index", etc.
+const REPO_LABEL = "Test Bot (V100)";       // e.g., "Lery's Elite Alerts", "Coffee Machine", etc.
+const DERIV_APP_ID = "33VaD9iKIb3cZxguzEkAo";                // <-- REPLACE "1089" WITH YOUR NUMERIC DERIV APP ID HERE
 // ==================================================================
 
-const M5 = 300;       
-const D1 = 86400;     
+const M5 = 300;       // 5 minutes in seconds
+const D1 = 86400;     // 1 day in seconds
 const CANDLES = 200;
 
 const ATR_PERIOD = 14;
 const FRACTAL_LOOKBACK = 8;
 const SETUP_EXPIRY_BARS = 15;
-const RISK_REWARD = 1.5; 
+const RISK_REWARD = 1.5; // 1:1.5 Risk-to-Reward Ratio
 
 const TG_TOKEN = process.env.TG_BOT_TOKEN;
 const TG_CHAT = process.env.TG_CHAT_ID;
@@ -125,6 +125,7 @@ async function getCurrentPrice() {
   });
 }
 
+// SAFE EXECUTION: Automatically locks trades strictly to Demo (VRTC) account and returns contract ID
 async function executeTrade(direction, entry, sl, tp1) {
   if (!DERIV_TOKEN) {
     console.log("⚠️ DERIV_API_TOKEN not found. Skipping live execution.");
@@ -161,12 +162,12 @@ async function executeTrade(direction, entry, sl, tp1) {
         console.log(`🎯 Locked to Demo Account ID: ${demoLoginId}`);
 
         const contractType = direction === "BUY" ? "MULTUP" : "MULTDOWN";
-        const stakeUSD = 10; 
+        const stakeUSD = 10; // Default test stake
 
         ws.send(JSON.stringify({
           buy: 1,
           price: stakeUSD,
-          loginid: demoLoginId, 
+          loginid: demoLoginId, // <--- GUARANTEES EXECUTION ON DEMO ONLY
           parameters: {
             contract_type: contractType,
             symbol: SYMBOL,
@@ -200,6 +201,7 @@ async function executeTrade(direction, entry, sl, tp1) {
   });
 }
 
+// EARLY EXIT: Actively sells/closes an open contract on Deriv's server when MACD triggers
 async function closeContract(contractId) {
   if (!DERIV_TOKEN || !contractId) return;
   return new Promise((resolve, reject) => {
@@ -225,7 +227,7 @@ async function closeContract(contractId) {
 
         ws.send(JSON.stringify({
           sell: contractId,
-          price: 0, 
+          price: 0, // Sell at market price
           loginid: demoLoginId
         }));
       }
@@ -372,6 +374,13 @@ async function runSummary(daysBack, title) {
       await runSummary(30, "Monthly Report");
       return;
     }
+
+    // ==================== TEMPORARY TEST BLOCK ====================
+    // Remove or comment out these 4 lines after your test trade goes through!
+    console.log("🧪 Running manual test trade execution...");
+    await executeTrade("BUY", 1000, 900, 1150);
+    return; 
+    // ==============================================================
 
     await new Promise(resolve => setTimeout(resolve, 5000));
 
@@ -547,7 +556,6 @@ async function runSummary(daysBack, title) {
 
       await sendTelegram(message);
 
-      // 1. IMMEDIATELY write to trades.json so the Entry Guard locks in and prevents duplicates
       trades.push({
         id: `${SYMBOL}-${isoTime}`,
         contractId: null,
@@ -566,7 +574,6 @@ async function runSummary(daysBack, title) {
       });
       fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
 
-      // 2. Safely execute live trade on Deriv and save contract ID in the background
       try {
         const contractId = await executeTrade(direction, entry, sl, tp1);
         if (contractId) {
