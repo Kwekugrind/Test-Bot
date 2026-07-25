@@ -19,8 +19,6 @@ const RISK_REWARD = 1.5;
 const STAKE_USD = 10;
 const MULTIPLIER = 10;
 
-// Register your own app at https://app.deriv.com/account/api-token
-// and replace 1089 with your app_id if trading auth keeps failing
 const DERIV_APP_ID = process.env.DERIV_APP_ID || "1089";
 
 const TG_TOKEN = process.env.TG_BOT_TOKEN;
@@ -28,6 +26,19 @@ const TG_CHAT = process.env.TG_CHAT_ID;
 const DERIV_TOKEN = process.env.DERIV_API_TOKEN;
 const TRIGGER_SOURCE = process.env.TRIGGER_SOURCE;
 const MODE = process.env.MODE && process.env.MODE.trim() !== "" ? process.env.MODE.trim() : "scan";
+
+// ==================== TOKEN DEBUG (remove after confirmed working) ====================
+console.log("=== TOKEN DEBUG ===");
+if (!DERIV_TOKEN || DERIV_TOKEN.trim() === "") {
+  console.log("❌ DERIV_API_TOKEN: EMPTY or NOT SET");
+} else {
+  console.log(`✅ DERIV_API_TOKEN is set`);
+  console.log(`   Length: ${DERIV_TOKEN.length} characters`);
+  console.log(`   Starts with: ${DERIV_TOKEN.substring(0, 4)}***`);
+  console.log(`   Expected format: a1-xxxxxxxx... (starts with 'a1-')`);
+}
+console.log("===================");
+// ====================================================================================
 
 if (TRIGGER_SOURCE !== "cronjob") {
   console.log("⛔ Blocked: Not a cronjob trigger.");
@@ -303,9 +314,6 @@ async function runSummary(daysBack, title) {
     if (MODE === "monthly") { await runSummary(30, "Monthly Report"); return; }
 
     // ==================== TEST MODE ====================
-    // Trigger manually: Actions → Run workflow → set mode = "test"
-    // Fires a real demo BUY trade without waiting for a strategy signal.
-    // Does NOT write to trades.json so the entry guard is unaffected.
     if (MODE === "test") {
       console.log("🧪 TEST MODE: Firing a direct demo BUY trade...");
       await sendTelegram(
