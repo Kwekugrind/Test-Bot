@@ -91,7 +91,6 @@ async function runSummary(daysBack, title) {
 }
 
 // ==================== REPORT & TEST MODES (run before TRIGGER_SOURCE guard) ====================
-// These run on a schedule via GitHub Actions and don't need a cronjob trigger.
 (async () => {
   if (MODE === "daily")   { await runSummary(1,  "Daily Report");   process.exit(0); }
   if (MODE === "weekly")  { await runSummary(7,  "Weekly Report");  process.exit(0); }
@@ -452,11 +451,28 @@ async function runScanMode() {
         openTrade.result = settledResult;
         openTrade.closeTime = new Date().toISOString();
         fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
+
         const icon = settledResult === "WIN" ? "✅" : "❌";
+        const contractType = openTrade.direction === "BUY" ? "MULTUP" : "MULTDOWN";
+        const phase = openTrade.tp1Reached ? "Trailed past TP1 ✅" : "Closed before TP1";
+        const durationMins = Math.round((new Date(openTrade.closeTime) - new Date(openTrade.openTime)) / 60000);
+        const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
+        const tpDollars = parseFloat((slDollars * RISK_REWARD).toFixed(2));
+
         await sendTelegram(
-          `${icon} *${REPO_LABEL} Trade Closed*\n` +
-          `Result: ${settledResult}\nSymbol: ${SYMBOL_NAME}\n` +
-          `Reason: ${exitReason}\nExit Price: ${currentPrice.toFixed(4)}`
+          `${icon} *${REPO_LABEL} — Trade ${settledResult}*\n\n` +
+          `Direction: ${openTrade.direction} (${contractType})\n` +
+          `Symbol:    ${SYMBOL_NAME}\n\n` +
+          `📍 Entry:  ${openTrade.entry.toFixed(4)}\n` +
+          `🏁 Exit:   ${currentPrice.toFixed(4)}\n` +
+          `🛑 SL:     ${openTrade.sl.toFixed(4)}  ($${slDollars} hard)\n` +
+          `🎯 TP1:    ${openTrade.tp1.toFixed(4)}  ($${tpDollars} soft)\n\n` +
+          `Phase:     ${phase}\n` +
+          `Reason:    ${exitReason}\n` +
+          `Duration:  ~${durationMins} min\n\n` +
+          `Opened:  ${openTrade.openTime.substring(0, 16).replace("T", " ")} UTC\n` +
+          `Closed:  ${openTrade.closeTime.substring(0, 16).replace("T", " ")} UTC\n` +
+          (openTrade.contractId ? `Contract: \`${openTrade.contractId}\`` : "")
         );
       }
       return;
