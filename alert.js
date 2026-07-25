@@ -18,7 +18,7 @@ const FRACTAL_LOOKBACK = 8;
 const SETUP_EXPIRY_BARS = 15;
 const RISK_REWARD = 1.5;
 const STAKE_USD = 3;    // Capital at stake per trade
-const MULTIPLIER = 100; // Valid values for V100 MULTUP/MULTDOWN: 40, 100, 200, 300, 400
+const MULTIPLIER = 40; // Valid values for V100 MULTUP/MULTDOWN: 40, 100, 200, 300, 400
 
 // SL = 50% of stake = $1.50 max loss per trade (hard, server-side on Deriv)
 // TP1 = SL × 1.5 = $2.25 — soft target tracked in code only, not sent to Deriv
