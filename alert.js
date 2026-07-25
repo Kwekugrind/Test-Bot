@@ -20,8 +20,10 @@ const RISK_REWARD = 1.5;
 const STAKE_USD = 3;    // Capital at stake per trade
 const MULTIPLIER = 100; // Valid values for V100 MULTUP/MULTDOWN: 40, 100, 200, 300, 400
 
-// SL = 50% of stake = $1.50 max loss per trade
-// TP = SL × 1.5 = $2.25 profit target (1:1.5 risk-reward on actual dollar risk)
+// SL = 50% of stake = $1.50 max loss per trade (hard, server-side on Deriv)
+// TP1 = SL × 1.5 = $2.25 — soft target tracked in code only, not sent to Deriv
+// SAFETY_TP = $15 — hard ceiling on Deriv in case bot fails to run
+const SAFETY_TP_USD = 15;
 
 // Public numeric app_id for market data (ws.binaryws.com, no auth needed)
 const MARKET_DATA_APP_ID = "1089";
@@ -172,12 +174,10 @@ async function executeTrade(direction) {
   if (!DERIV_APP_ID) { console.log("⚠️ DERIV_APP_ID not set. Skipping."); return null; }
   if (!PROXY_URL || !PROXY_SECRET) { console.log("⚠️ PROXY_URL or PROXY_SECRET not set. Skipping."); return null; }
 
-  // SL = 50% of stake. TP = SL × 1.5 (true 1:1.5 risk-reward in dollar terms)
   const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
-  const tpDollars = parseFloat((slDollars * RISK_REWARD).toFixed(2));
 
   console.log(`🔄 Sending ${direction} trade via Cloudflare proxy...`);
-  console.log(`   Symbol: ${TRADING_SYMBOL} | Stake: $${STAKE_USD} | Multiplier: ${MULTIPLIER}x | SL: $${slDollars} | TP: $${tpDollars}`);
+  console.log(`   Symbol: ${TRADING_SYMBOL} | Stake: $${STAKE_USD} | Multiplier: ${MULTIPLIER}x | SL: $${slDollars} | Safety TP: $${SAFETY_TP_USD}`);
 
   const accountId = await getDerivAccountId();
   const wsUrl = await getDerivOTP(accountId);
@@ -194,7 +194,7 @@ async function executeTrade(direction) {
       multiplier: MULTIPLIER,
       limit_order: {
         stop_loss: slDollars,
-        take_profit: tpDollars
+        take_profit: SAFETY_TP_USD  // Hard ceiling only — bot exits via MACD before this
       }
     }
   };
@@ -351,7 +351,7 @@ async function runSummary(daysBack, title) {
         `🧪 *Test Trade Initiated*\n` +
         `Symbol: ${SYMBOL_NAME}\nDirection: BUY\n` +
         `Stake: $${STAKE_USD} | Multiplier: ${MULTIPLIER}x\n` +
-        `SL: $${slDollars} | TP: $${tpDollars} (1:${RISK_REWARD} on risk)`
+        `SL: $${slDollars} (hard) | TP1: $${tpDollars} (soft) | Safety TP: $${SAFETY_TP_USD} (hard ceiling)`
       );
       try {
         const contractId = await executeTrade("BUY");
@@ -387,30 +387,61 @@ async function runSummary(daysBack, title) {
       const emaFast = ema(closes, 4);
       const emaSlow = ema(closes, 34);
       const macd = emaFast[i] - emaSlow[i];
+      const macdFlippedAgainstTrade =
+        (openTrade.direction === "BUY" && macd < 0) ||
+        (openTrade.direction === "SELL" && macd > 0);
 
       let settledResult = null;
       let exitReason = "";
 
-      // MACD early exit checked first — limits loss if momentum reverses
-      if (openTrade.direction === "BUY" && macd < 0) { settledResult = "LOSS"; exitReason = "MACD Early Exit"; }
-      else if (openTrade.direction === "SELL" && macd > 0) { settledResult = "LOSS"; exitReason = "MACD Early Exit"; }
-      else if (openTrade.direction === "BUY") {
-        if (currentPrice >= openTrade.tp1) { settledResult = "WIN"; exitReason = "TP1 Hit"; }
-        else if (currentPrice <= openTrade.sl) { settledResult = "LOSS"; exitReason = "Stop Loss Hit"; }
+      if (openTrade.tp1Reached) {
+        // ── PHASE 2: TP1 already breached — trail with MACD only ──
+        // Exit when MACD flips against the trade. SL is still live on Deriv.
+        if (macdFlippedAgainstTrade) {
+          settledResult = "WIN";
+          exitReason = "MACD Trail Exit (after TP1)";
+          console.log(`📈 MACD trail exit triggered after TP1 was reached.`);
+        }
       } else {
-        if (currentPrice <= openTrade.tp1) { settledResult = "WIN"; exitReason = "TP1 Hit"; }
-        else if (currentPrice >= openTrade.sl) { settledResult = "LOSS"; exitReason = "Stop Loss Hit"; }
+        // ── PHASE 1: Before TP1 — MACD early exit to limit losses ──
+        if (macdFlippedAgainstTrade) {
+          settledResult = "LOSS";
+          exitReason = "MACD Early Exit (before TP1)";
+        } else if (openTrade.direction === "BUY" && currentPrice >= openTrade.tp1) {
+          // TP1 price level breached — switch to Phase 2 trailing
+          openTrade.tp1Reached = true;
+          fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
+          console.log(`🎯 TP1 breached at ${currentPrice.toFixed(4)} — switching to MACD trail mode`);
+          await sendTelegram(
+            `🎯 *TP1 Reached — Now Trailing!*\n` +
+            `Symbol: ${SYMBOL_NAME}\nDirection: BUY\n` +
+            `Price: ${currentPrice.toFixed(4)} | TP1 was: ${openTrade.tp1.toFixed(4)}\n\n` +
+            `Trade will now stay open while M5 MACD > 0.\nWill close when momentum fades.`
+          );
+        } else if (openTrade.direction === "SELL" && currentPrice <= openTrade.tp1) {
+          openTrade.tp1Reached = true;
+          fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
+          console.log(`🎯 TP1 breached at ${currentPrice.toFixed(4)} — switching to MACD trail mode`);
+          await sendTelegram(
+            `🎯 *TP1 Reached — Now Trailing!*\n` +
+            `Symbol: ${SYMBOL_NAME}\nDirection: SELL\n` +
+            `Price: ${currentPrice.toFixed(4)} | TP1 was: ${openTrade.tp1.toFixed(4)}\n\n` +
+            `Trade will now stay open while M5 MACD < 0.\nWill close when momentum fades.`
+          );
+        }
       }
 
       if (settledResult) {
-        if (openTrade.contractId && exitReason.includes("Early Exit")) {
-          await closeContract(openTrade.contractId);
-        }
+        await closeContract(openTrade.contractId);
         openTrade.result = settledResult;
         openTrade.closeTime = new Date().toISOString();
         fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
         const icon = settledResult === "WIN" ? "✅" : "❌";
-        await sendTelegram(`${icon} ${REPO_LABEL} Trade Result: ${settledResult}\nSymbol: ${SYMBOL_NAME}\nReason: ${exitReason}\nExit Price: ${currentPrice}\nOutcome: ${settledResult === "WIN" ? `+${openTrade.rr}R` : "-1.0R"}`);
+        await sendTelegram(
+          `${icon} *${REPO_LABEL} Trade Closed*\n` +
+          `Result: ${settledResult}\nSymbol: ${SYMBOL_NAME}\n` +
+          `Reason: ${exitReason}\nExit Price: ${currentPrice.toFixed(4)}`
+        );
       }
       return;
     }
@@ -481,8 +512,10 @@ async function runSummary(daysBack, title) {
       let message = `🚨 ${SYMBOL_NAME.toUpperCase()} CONFIRMED SIGNAL 🚨\n\n` +
         `Direction: ${direction}\nRepo: ${REPO_LABEL}\nTimeframe: M5\n\n` +
         `📍 Entry:  ${entry.toFixed(4)}\n🛑 SL:     ${sl.toFixed(4)}\n` +
-        `🎯 TP1:    ${tp1.toFixed(4)}  (1:1.5)\n🎯 TP2:    ${tp2.toFixed(4)}  (2:1)\n🎯 TP3:    ${tp3.toFixed(4)}  (3:1)\n\n` +
-        `💰 Stake: $${STAKE_USD} | SL: $${slDollars} | TP: $${tpDollars}\n` +
+        `🎯 TP1:    ${tp1.toFixed(4)}  → trail with MACD after this\n` +
+        `🎯 TP2:    ${tp2.toFixed(4)}  (reference)\n` +
+        `🎯 TP3:    ${tp3.toFixed(4)}  (reference)\n\n` +
+        `💰 Stake: $${STAKE_USD} | Hard SL: $${slDollars} | Soft TP1: $${tpDollars} | Safety: $${SAFETY_TP_USD}\n` +
         `📊 Risk:   ${risk.toFixed(2)} points\n🔥 Setup:  Fractal break confirmed with impulse\n` +
         `━━━━━━━━━━━━━━━━━━━━\n📅 D1 CANDLE STATUS\n━━━━━━━━━━━━━━━━━━━━\n`;
 
@@ -498,6 +531,7 @@ async function runSummary(daysBack, title) {
       trades.push({
         id: `${SYMBOL}-${isoTime}`, contractId: null, repo: REPO_LABEL,
         symbol: SYMBOL, direction, entry, sl, tp1, tp2, tp3,
+        tp1Reached: false,  // flips to true once price breaches TP1 — enables MACD trailing
         rr: RISK_REWARD, openTime: timeFormatted, closeTime: null, result: null
       });
       fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
