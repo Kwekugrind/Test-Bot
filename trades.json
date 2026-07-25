@@ -29,5 +29,22 @@
     "openTime": "2026-07-25 16:20:00",
     "closeTime": "2026-07-25T17:00:18.994Z",
     "result": "LOSS"
+  },
+  {
+    "id": "R_100-2026-07-25T17:25:00.000Z",
+    "contractId": 6792981419,
+    "repo": "Test Bot (V100)",
+    "symbol": "R_100",
+    "direction": "SELL",
+    "entry": 541.11,
+    "sl": 555.9,
+    "tp1": 518.9250000000001,
+    "tp2": 511.5300000000001,
+    "tp3": 496.7400000000001,
+    "tp1Reached": false,
+    "rr": 1.5,
+    "openTime": "2026-07-25 17:25:00",
+    "closeTime": null,
+    "result": null
   }
 ]
