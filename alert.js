@@ -48,10 +48,91 @@ console.log(`MODE:            ${MODE}`);
 console.log("=====================");
 // ==============================================
 
-if (TRIGGER_SOURCE !== "cronjob") {
-  console.log("⛔ Blocked: Not a cronjob trigger.");
-  process.exit(0);
+// ==================== TELEGRAM HELPER ====================
+async function sendTelegram(message) {
+  if (!TG_TOKEN || !TG_CHAT) return;
+  try {
+    await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: TG_CHAT, text: message, parse_mode: "Markdown" })
+    });
+  } catch (err) {
+    console.error("❌ Telegram error:", err.message);
+  }
 }
+
+// ==================== PERFORMANCE REPORTS ====================
+async function runSummary(daysBack, title) {
+  let trades = fs.existsSync("trades.json") ? JSON.parse(fs.readFileSync("trades.json")) : [];
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - daysBack);
+  const periodTrades = trades.filter(t => t.result && t.result !== "CANCELLED" && new Date(t.closeTime) >= cutoff);
+
+  if (periodTrades.length === 0) {
+    await sendTelegram(`📊 *${REPO_LABEL} — ${title}*\n\nNo closed trades in this period.`);
+    return;
+  }
+
+  const wins = periodTrades.filter(t => t.result === "WIN").length;
+  const losses = periodTrades.filter(t => t.result === "LOSS").length;
+  const netR = periodTrades.reduce((s, t) => s + (t.result === "WIN" ? t.rr : -1), 0);
+  const winRate = ((wins / periodTrades.length) * 100).toFixed(1);
+  const netDollars = parseFloat((netR * (STAKE_USD * 0.5)).toFixed(2));
+
+  await sendTelegram(
+    `📊 *${REPO_LABEL} — ${title}*\n\n` +
+    `Trades:    ${periodTrades.length}\n` +
+    `Wins:      ${wins}  |  Losses: ${losses}\n` +
+    `Win Rate:  ${winRate}%\n` +
+    `Net R:     ${netR.toFixed(1)}R\n` +
+    `Net P&L:   $${netDollars >= 0 ? "+" : ""}${netDollars}`
+  );
+}
+
+// ==================== REPORT & TEST MODES (run before TRIGGER_SOURCE guard) ====================
+// These run on a schedule via GitHub Actions and don't need a cronjob trigger.
+(async () => {
+  if (MODE === "daily")   { await runSummary(1,  "Daily Report");   process.exit(0); }
+  if (MODE === "weekly")  { await runSummary(7,  "Weekly Report");  process.exit(0); }
+  if (MODE === "monthly") { await runSummary(30, "Monthly Report"); process.exit(0); }
+
+  if (MODE === "test") {
+    console.log("🧪 TEST MODE: Firing a direct demo BUY trade via proxy...");
+    const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
+    const tpDollars = parseFloat((slDollars * RISK_REWARD).toFixed(2));
+    await sendTelegram(
+      `🧪 *Test Trade Initiated*\n` +
+      `Symbol: ${SYMBOL_NAME}\nDirection: BUY\n` +
+      `Stake: $${STAKE_USD} | Multiplier: ${MULTIPLIER}x\n` +
+      `SL: $${slDollars} (hard) | TP1: $${tpDollars} (soft) | Safety TP: $${SAFETY_TP_USD} (hard ceiling)`
+    );
+    try {
+      const contractId = await executeTrade("BUY");
+      if (contractId) {
+        await sendTelegram(
+          `✅ *Test Trade Executed Successfully!*\n` +
+          `Contract ID: \`${contractId}\`\n` +
+          `Check your Deriv demo account to confirm the open position.`
+        );
+      } else {
+        await sendTelegram(`⚠️ *Test Trade Returned Null*\nCheck Actions logs for details.`);
+      }
+    } catch (err) {
+      console.error("❌ Test trade error:", err.message);
+      await sendTelegram(`❌ *Test Trade Failed*\nError: ${err.message}\n\nCheck Actions logs for full details.`);
+    }
+    process.exit(0);
+  }
+
+  // ── SCAN MODE: only runs when triggered by Cronjob.org ──
+  if (TRIGGER_SOURCE !== "cronjob") {
+    console.log("⛔ Blocked: Not a cronjob trigger.");
+    process.exit(0);
+  }
+
+  await runScanMode();
+})();
 
 // ==================== STATE MANAGEMENT ====================
 let state = {
@@ -66,20 +147,6 @@ try {
   }
 } catch (e) {
   console.log("State load error, starting fresh.");
-}
-
-// ==================== TELEGRAM HELPER ====================
-async function sendTelegram(message) {
-  if (!TG_TOKEN || !TG_CHAT) return;
-  try {
-    await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: TG_CHAT, text: message, parse_mode: "Markdown" })
-    });
-  } catch (err) {
-    console.error("❌ Telegram error:", err.message);
-  }
 }
 
 // ==================== MARKET DATA (public, no auth, legacy ws) ====================
@@ -194,7 +261,7 @@ async function executeTrade(direction) {
       multiplier: MULTIPLIER,
       limit_order: {
         stop_loss: slDollars,
-        take_profit: SAFETY_TP_USD  // Hard ceiling only — bot exits via MACD before this
+        take_profit: SAFETY_TP_USD
       }
     }
   };
@@ -322,58 +389,9 @@ function checkAlignment(signalDir, d1Dir) {
   return "⚠️ COUNTER-TREND to daily";
 }
 
-// ==================== PERFORMANCE REPORTS ====================
-async function runSummary(daysBack, title) {
-  let trades = fs.existsSync("trades.json") ? JSON.parse(fs.readFileSync("trades.json")) : [];
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - daysBack);
-  const periodTrades = trades.filter(t => t.result && t.result !== "CANCELLED" && new Date(t.closeTime) >= cutoff);
-  if (periodTrades.length === 0) return;
-  const wins = periodTrades.filter(t => t.result === "WIN").length;
-  const losses = periodTrades.filter(t => t.result === "LOSS").length;
-  const netR = periodTrades.reduce((s, t) => s + (t.result === "WIN" ? t.rr : -1), 0);
-  const winRate = ((wins / periodTrades.length) * 100).toFixed(1);
-  await sendTelegram(`📊 ${REPO_LABEL} — ${title}\n\nTrades: ${periodTrades.length}\nWins: ${wins} | Losses: ${losses}\nWin Rate: ${winRate}%\nNet R: ${netR.toFixed(1)}R`);
-}
-
-// ==================== MAIN LOGIC ====================
-(async () => {
+// ==================== SCAN MODE ====================
+async function runScanMode() {
   try {
-    if (MODE === "weekly") { await runSummary(7, "Weekly Report"); return; }
-    if (MODE === "monthly") { await runSummary(30, "Monthly Report"); return; }
-
-    // ==================== TEST MODE ====================
-    if (MODE === "test") {
-      console.log("🧪 TEST MODE: Firing a direct demo BUY trade via proxy...");
-      const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
-      const tpDollars = parseFloat((slDollars * RISK_REWARD).toFixed(2));
-      await sendTelegram(
-        `🧪 *Test Trade Initiated*\n` +
-        `Symbol: ${SYMBOL_NAME}\nDirection: BUY\n` +
-        `Stake: $${STAKE_USD} | Multiplier: ${MULTIPLIER}x\n` +
-        `SL: $${slDollars} (hard) | TP1: $${tpDollars} (soft) | Safety TP: $${SAFETY_TP_USD} (hard ceiling)`
-      );
-      try {
-        const contractId = await executeTrade("BUY");
-        if (contractId) {
-          await sendTelegram(
-            `✅ *Test Trade Executed Successfully!*\n` +
-            `Contract ID: \`${contractId}\`\n` +
-            `Check your Deriv demo account to confirm the open position.`
-          );
-        } else {
-          await sendTelegram(`⚠️ *Test Trade Returned Null*\nCheck Actions logs for details.`);
-        }
-      } catch (err) {
-        console.error("❌ Test trade error:", err.message);
-        await sendTelegram(`❌ *Test Trade Failed*\nError: ${err.message}\n\nCheck Actions logs for full details.`);
-      }
-      return;
-    }
-    // ====================================================
-
-    await new Promise(resolve => setTimeout(resolve, 5000));
-
     let trades = fs.existsSync("trades.json") ? JSON.parse(fs.readFileSync("trades.json")) : [];
     const candles = await fetchCandles(M5, CANDLES);
     if (!candles || candles.length < 50) return;
@@ -396,7 +414,6 @@ async function runSummary(daysBack, title) {
 
       if (openTrade.tp1Reached) {
         // ── PHASE 2: TP1 already breached — trail with MACD only ──
-        // Exit when MACD flips against the trade. SL is still live on Deriv.
         if (macdFlippedAgainstTrade) {
           settledResult = "WIN";
           exitReason = "MACD Trail Exit (after TP1)";
@@ -408,7 +425,6 @@ async function runSummary(daysBack, title) {
           settledResult = "LOSS";
           exitReason = "MACD Early Exit (before TP1)";
         } else if (openTrade.direction === "BUY" && currentPrice >= openTrade.tp1) {
-          // TP1 price level breached — switch to Phase 2 trailing
           openTrade.tp1Reached = true;
           fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
           console.log(`🎯 TP1 breached at ${currentPrice.toFixed(4)} — switching to MACD trail mode`);
@@ -531,7 +547,7 @@ async function runSummary(daysBack, title) {
       trades.push({
         id: `${SYMBOL}-${isoTime}`, contractId: null, repo: REPO_LABEL,
         symbol: SYMBOL, direction, entry, sl, tp1, tp2, tp3,
-        tp1Reached: false,  // flips to true once price breaches TP1 — enables MACD trailing
+        tp1Reached: false,
         rr: RISK_REWARD, openTime: timeFormatted, closeTime: null, result: null
       });
       fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
@@ -557,4 +573,4 @@ async function runSummary(daysBack, title) {
     console.error("❌ BOT ERROR:", err.message);
     process.exit(1);
   }
-})();
+}
