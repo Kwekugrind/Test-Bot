@@ -17,8 +17,11 @@ const ATR_PERIOD = 14;
 const FRACTAL_LOOKBACK = 8;
 const SETUP_EXPIRY_BARS = 15;
 const RISK_REWARD = 1.5;
-const STAKE_USD = 10;
+const STAKE_USD = 3;    // Capital at stake per trade
 const MULTIPLIER = 100; // Valid values for V100 MULTUP/MULTDOWN: 40, 100, 200, 300, 400
+
+// SL = 50% of stake = $1.50 max loss per trade
+// TP = SL × 1.5 = $2.25 profit target (1:1.5 risk-reward on actual dollar risk)
 
 // Public numeric app_id for market data (ws.binaryws.com, no auth needed)
 const MARKET_DATA_APP_ID = "1089";
@@ -169,8 +172,9 @@ async function executeTrade(direction) {
   if (!DERIV_APP_ID) { console.log("⚠️ DERIV_APP_ID not set. Skipping."); return null; }
   if (!PROXY_URL || !PROXY_SECRET) { console.log("⚠️ PROXY_URL or PROXY_SECRET not set. Skipping."); return null; }
 
+  // SL = 50% of stake. TP = SL × 1.5 (true 1:1.5 risk-reward in dollar terms)
   const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
-  const tpDollars = parseFloat((STAKE_USD * RISK_REWARD).toFixed(2));
+  const tpDollars = parseFloat((slDollars * RISK_REWARD).toFixed(2));
 
   console.log(`🔄 Sending ${direction} trade via Cloudflare proxy...`);
   console.log(`   Symbol: ${TRADING_SYMBOL} | Stake: $${STAKE_USD} | Multiplier: ${MULTIPLIER}x | SL: $${slDollars} | TP: $${tpDollars}`);
@@ -342,12 +346,12 @@ async function runSummary(daysBack, title) {
     if (MODE === "test") {
       console.log("🧪 TEST MODE: Firing a direct demo BUY trade via proxy...");
       const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
-      const tpDollars = parseFloat((STAKE_USD * RISK_REWARD).toFixed(2));
+      const tpDollars = parseFloat((slDollars * RISK_REWARD).toFixed(2));
       await sendTelegram(
         `🧪 *Test Trade Initiated*\n` +
         `Symbol: ${SYMBOL_NAME}\nDirection: BUY\n` +
         `Stake: $${STAKE_USD} | Multiplier: ${MULTIPLIER}x\n` +
-        `SL: $${slDollars} | TP: $${tpDollars}`
+        `SL: $${slDollars} | TP: $${tpDollars} (1:${RISK_REWARD} on risk)`
       );
       try {
         const contractId = await executeTrade("BUY");
@@ -387,6 +391,7 @@ async function runSummary(daysBack, title) {
       let settledResult = null;
       let exitReason = "";
 
+      // MACD early exit checked first — limits loss if momentum reverses
       if (openTrade.direction === "BUY" && macd < 0) { settledResult = "LOSS"; exitReason = "MACD Early Exit"; }
       else if (openTrade.direction === "SELL" && macd > 0) { settledResult = "LOSS"; exitReason = "MACD Early Exit"; }
       else if (openTrade.direction === "BUY") {
@@ -466,6 +471,9 @@ async function runSummary(daysBack, title) {
     }
 
     if (signalTriggered) {
+      const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
+      const tpDollars = parseFloat((slDollars * RISK_REWARD).toFixed(2));
+
       const d1 = await getD1Context();
       const alignment = d1 ? checkAlignment(direction, d1.direction) : "⚠️ D1 data unavailable";
       const timeFormatted = new Date(currentCandleEpoch * 1000).toISOString().replace("T", " ").substring(0, 19);
@@ -474,6 +482,7 @@ async function runSummary(daysBack, title) {
         `Direction: ${direction}\nRepo: ${REPO_LABEL}\nTimeframe: M5\n\n` +
         `📍 Entry:  ${entry.toFixed(4)}\n🛑 SL:     ${sl.toFixed(4)}\n` +
         `🎯 TP1:    ${tp1.toFixed(4)}  (1:1.5)\n🎯 TP2:    ${tp2.toFixed(4)}  (2:1)\n🎯 TP3:    ${tp3.toFixed(4)}  (3:1)\n\n` +
+        `💰 Stake: $${STAKE_USD} | SL: $${slDollars} | TP: $${tpDollars}\n` +
         `📊 Risk:   ${risk.toFixed(2)} points\n🔥 Setup:  Fractal break confirmed with impulse\n` +
         `━━━━━━━━━━━━━━━━━━━━\n📅 D1 CANDLE STATUS\n━━━━━━━━━━━━━━━━━━━━\n`;
 
