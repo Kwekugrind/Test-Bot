@@ -19,6 +19,10 @@ const RISK_REWARD = 1.5;
 const STAKE_USD = 10;
 const MULTIPLIER = 10;
 
+// Register your own app at https://app.deriv.com/account/api-token
+// and replace 1089 with your app_id if trading auth keeps failing
+const DERIV_APP_ID = process.env.DERIV_APP_ID || "1089";
+
 const TG_TOKEN = process.env.TG_BOT_TOKEN;
 const TG_CHAT = process.env.TG_CHAT_ID;
 const DERIV_TOKEN = process.env.DERIV_API_TOKEN;
@@ -61,7 +65,7 @@ async function sendTelegram(message) {
 
 // ==================== DERIV WEBSOCKET HELPER ====================
 function openDerivWS() {
-  return new WebSocket("wss://ws.binaryws.com/websockets/v3?app_id=1089", {
+  return new WebSocket(`wss://ws.binaryws.com/websockets/v3?app_id=${DERIV_APP_ID}`, {
     headers: { "Origin": "https://deriv.com" }
   });
 }
@@ -297,6 +301,39 @@ async function runSummary(daysBack, title) {
   try {
     if (MODE === "weekly") { await runSummary(7, "Weekly Report"); return; }
     if (MODE === "monthly") { await runSummary(30, "Monthly Report"); return; }
+
+    // ==================== TEST MODE ====================
+    // Trigger manually: Actions → Run workflow → set mode = "test"
+    // Fires a real demo BUY trade without waiting for a strategy signal.
+    // Does NOT write to trades.json so the entry guard is unaffected.
+    if (MODE === "test") {
+      console.log("🧪 TEST MODE: Firing a direct demo BUY trade...");
+      await sendTelegram(
+        `🧪 *Test Trade Initiated*\n` +
+        `Symbol: ${SYMBOL_NAME}\n` +
+        `Direction: BUY\n` +
+        `Stake: $${STAKE_USD} | Multiplier: ${MULTIPLIER}x\n` +
+        `App ID: ${DERIV_APP_ID}\n` +
+        `SL: $${(STAKE_USD * 0.5).toFixed(2)} | TP: $${(STAKE_USD * RISK_REWARD).toFixed(2)}`
+      );
+      try {
+        const contractId = await executeTrade("BUY");
+        if (contractId) {
+          await sendTelegram(
+            `✅ *Test Trade Executed Successfully!*\n` +
+            `Contract ID: \`${contractId}\`\n` +
+            `Check your Deriv demo account to confirm the open position.`
+          );
+        } else {
+          await sendTelegram(`⚠️ *Test Trade Returned Null*\nToken may be missing or lacks Trade scope. Check Actions logs.`);
+        }
+      } catch (err) {
+        console.error("❌ Test trade error:", err.message);
+        await sendTelegram(`❌ *Test Trade Failed*\nError: ${err.message}\n\nCheck Actions logs for full details.`);
+      }
+      return;
+    }
+    // ====================================================
 
     await new Promise(resolve => setTimeout(resolve, 5000));
 
