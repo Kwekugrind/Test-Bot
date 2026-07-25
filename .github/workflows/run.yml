@@ -41,7 +41,8 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           DERIV_API_TOKEN: ${{ secrets.DERIV_API_TOKEN }}
-          DERIV_APP_ID: ${{ secrets.DERIV_APP_ID }}
+          PROXY_URL: ${{ secrets.PROXY_URL }}
+          PROXY_SECRET: ${{ secrets.PROXY_SECRET }}
           TRIGGER_SOURCE: ${{ github.event.inputs.source || 'cronjob' }}
           MODE: ${{ github.event.inputs.mode || 'scan' }}
         run: node alert.js
