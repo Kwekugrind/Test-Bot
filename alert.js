@@ -3,7 +3,8 @@ import fetch from "node-fetch";
 import fs from "fs";
 
 // ==================== REPOSITORY CONFIGURATION ====================
-const SYMBOL = "R_100";
+const SYMBOL = "R_100";          // Legacy symbol for market data (ws.binaryws.com)
+const TRADING_SYMBOL = "1HZ100V"; // New symbol for trading API (api.derivws.com)
 const SYMBOL_NAME = "Volatility 100 Index";
 const REPO_LABEL = "Test Bot (V100)";
 // ==================================================================
@@ -76,7 +77,7 @@ async function sendTelegram(message) {
   }
 }
 
-// ==================== MARKET DATA (public, no auth) ====================
+// ==================== MARKET DATA (public, no auth, legacy ws) ====================
 function openDerivWS() {
   return new WebSocket(`wss://ws.binaryws.com/websockets/v3?app_id=${MARKET_DATA_APP_ID}`, {
     headers: { "Origin": "https://deriv.com" }
@@ -158,9 +159,8 @@ async function getDerivOTP(accountId) {
   });
   const json = await res.json();
   if (!res.ok) throw new Error(`getOTP failed: ${JSON.stringify(json.errors || json)}`);
-  const wsUrl = json.data.url;
   console.log(`   OTP WebSocket URL obtained ✅`);
-  return wsUrl;
+  return json.data.url;
 }
 
 // ==================== EXECUTE TRADE VIA CLOUDFLARE PROXY ====================
@@ -173,21 +173,17 @@ async function executeTrade(direction) {
   const tpDollars = parseFloat((STAKE_USD * RISK_REWARD).toFixed(2));
 
   console.log(`🔄 Sending ${direction} trade via Cloudflare proxy...`);
-  console.log(`   Stake: $${STAKE_USD} | Multiplier: ${MULTIPLIER}x | SL: $${slDollars} | TP: $${tpDollars}`);
+  console.log(`   Symbol: ${TRADING_SYMBOL} | Stake: $${STAKE_USD} | Multiplier: ${MULTIPLIER}x | SL: $${slDollars} | TP: $${tpDollars}`);
 
-  // Step 1: Get account ID from new Deriv REST API
   const accountId = await getDerivAccountId();
-
-  // Step 2: Get OTP-authenticated WebSocket URL (valid 120s, single use)
   const wsUrl = await getDerivOTP(accountId);
 
-  // Step 3: Send trade through Cloudflare Worker using OTP URL
   const params = {
     buy: "1",
     price: STAKE_USD,
     parameters: {
       contract_type: direction === "BUY" ? "MULTUP" : "MULTDOWN",
-      underlying_symbol: SYMBOL,
+      underlying_symbol: TRADING_SYMBOL,
       currency: "USD",
       amount: STAKE_USD,
       basis: "stake",
