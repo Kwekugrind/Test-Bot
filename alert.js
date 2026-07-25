@@ -18,7 +18,7 @@ const FRACTAL_LOOKBACK = 8;
 const SETUP_EXPIRY_BARS = 15;
 const RISK_REWARD = 1.5;
 const STAKE_USD = 10;
-const MULTIPLIER = 10;
+const MULTIPLIER = 100; // Valid values for V100 MULTUP/MULTDOWN: 40, 100, 200, 300, 400
 
 // Public numeric app_id for market data (ws.binaryws.com, no auth needed)
 const MARKET_DATA_APP_ID = "1089";
