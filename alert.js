@@ -19,7 +19,10 @@ const RISK_REWARD = 1.5;
 const STAKE_USD = 10;
 const MULTIPLIER = 10;
 
-const DERIV_APP_ID = process.env.DERIV_APP_ID || "1089";
+// Public numeric app_id for market data (ws.binaryws.com, no auth needed)
+const MARKET_DATA_APP_ID = "1089";
+// Alphanumeric app_id for new Deriv REST API (from developers.deriv.com)
+const DERIV_APP_ID = process.env.DERIV_APP_ID;
 
 const TG_TOKEN = process.env.TG_BOT_TOKEN;
 const TG_CHAT = process.env.TG_CHAT_ID;
@@ -32,7 +35,8 @@ const MODE = process.env.MODE && process.env.MODE.trim() !== "" ? process.env.MO
 // ==================== DEBUG ====================
 console.log("=== STARTUP DEBUG ===");
 console.log(`DERIV_API_TOKEN: ${DERIV_TOKEN ? `SET (${DERIV_TOKEN.length} chars, starts: ${DERIV_TOKEN.substring(0,4)}***)` : "NOT SET"}`);
-console.log(`PROXY_URL:       ${PROXY_URL ? `SET → ${PROXY_URL}` : "NOT SET"}`);
+console.log(`DERIV_APP_ID:    ${DERIV_APP_ID ? `SET (${DERIV_APP_ID.length} chars)` : "NOT SET"}`);
+console.log(`PROXY_URL:       ${PROXY_URL ? `SET` : "NOT SET"}`);
 console.log(`PROXY_SECRET:    ${PROXY_SECRET ? `SET (${PROXY_SECRET.length} chars)` : "NOT SET"}`);
 console.log(`MODE:            ${MODE}`);
 console.log("=====================");
@@ -72,9 +76,9 @@ async function sendTelegram(message) {
   }
 }
 
-// ==================== DERIV WEBSOCKET (market data only) ====================
+// ==================== MARKET DATA (public, no auth) ====================
 function openDerivWS() {
-  return new WebSocket(`wss://ws.binaryws.com/websockets/v3?app_id=${DERIV_APP_ID}`, {
+  return new WebSocket(`wss://ws.binaryws.com/websockets/v3?app_id=${MARKET_DATA_APP_ID}`, {
     headers: { "Origin": "https://deriv.com" }
   });
 }
@@ -127,23 +131,73 @@ async function getCurrentPrice() {
   });
 }
 
+// ==================== NEW DERIV REST API HELPERS ====================
+async function getDerivAccountId() {
+  const res = await fetch("https://api.derivws.com/trading/v1/options/accounts", {
+    headers: {
+      "Deriv-App-ID": DERIV_APP_ID,
+      "Authorization": `Bearer ${DERIV_TOKEN}`
+    }
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(`getAccounts failed: ${JSON.stringify(json.errors || json)}`);
+  const accounts = json.data;
+  if (!accounts || accounts.length === 0) throw new Error("No Deriv accounts found");
+  const demo = accounts.find(a => a.account_type === "demo") || accounts[0];
+  console.log(`   Account ID: ${demo.account_id} (${demo.account_type})`);
+  return demo.account_id;
+}
+
+async function getDerivOTP(accountId) {
+  const res = await fetch(`https://api.derivws.com/trading/v1/options/accounts/${accountId}/otp`, {
+    method: "POST",
+    headers: {
+      "Deriv-App-ID": DERIV_APP_ID,
+      "Authorization": `Bearer ${DERIV_TOKEN}`
+    }
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(`getOTP failed: ${JSON.stringify(json.errors || json)}`);
+  const wsUrl = json.data.url;
+  console.log(`   OTP WebSocket URL obtained ✅`);
+  return wsUrl;
+}
+
 // ==================== EXECUTE TRADE VIA CLOUDFLARE PROXY ====================
 async function executeTrade(direction) {
-  if (!DERIV_TOKEN) {
-    console.log("⚠️ DERIV_API_TOKEN not set. Skipping.");
-    return null;
-  }
-  if (!PROXY_URL || !PROXY_SECRET) {
-    console.log("⚠️ PROXY_URL or PROXY_SECRET not set. Skipping.");
-    return null;
-  }
+  if (!DERIV_TOKEN) { console.log("⚠️ DERIV_API_TOKEN not set. Skipping."); return null; }
+  if (!DERIV_APP_ID) { console.log("⚠️ DERIV_APP_ID not set. Skipping."); return null; }
+  if (!PROXY_URL || !PROXY_SECRET) { console.log("⚠️ PROXY_URL or PROXY_SECRET not set. Skipping."); return null; }
 
   const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
   const tpDollars = parseFloat((STAKE_USD * RISK_REWARD).toFixed(2));
 
   console.log(`🔄 Sending ${direction} trade via Cloudflare proxy...`);
-  console.log(`   Proxy URL: ${PROXY_URL}`);
   console.log(`   Stake: $${STAKE_USD} | Multiplier: ${MULTIPLIER}x | SL: $${slDollars} | TP: $${tpDollars}`);
+
+  // Step 1: Get account ID from new Deriv REST API
+  const accountId = await getDerivAccountId();
+
+  // Step 2: Get OTP-authenticated WebSocket URL (valid 120s, single use)
+  const wsUrl = await getDerivOTP(accountId);
+
+  // Step 3: Send trade through Cloudflare Worker using OTP URL
+  const params = {
+    buy: "1",
+    price: STAKE_USD,
+    parameters: {
+      contract_type: direction === "BUY" ? "MULTUP" : "MULTDOWN",
+      underlying_symbol: SYMBOL,
+      currency: "USD",
+      amount: STAKE_USD,
+      basis: "stake",
+      multiplier: MULTIPLIER,
+      limit_order: {
+        stop_loss: slDollars,
+        take_profit: tpDollars
+      }
+    }
+  };
 
   const response = await fetch(PROXY_URL, {
     method: "POST",
@@ -151,39 +205,17 @@ async function executeTrade(direction) {
       "Content-Type": "application/json",
       "x-proxy-secret": PROXY_SECRET
     },
-    body: JSON.stringify({
-      token: DERIV_TOKEN,
-      appId: DERIV_APP_ID,
-      action: "buy",
-      params: {
-        buy: 1,
-        price: STAKE_USD,
-        parameters: {
-          contract_type: direction === "BUY" ? "MULTUP" : "MULTDOWN",
-          symbol: SYMBOL,
-          currency: "USD",
-          amount: STAKE_USD,
-          basis: "stake",
-          multiplier: MULTIPLIER,
-          limit_order: {
-            stop_loss: slDollars,
-            take_profit: tpDollars
-          }
-        }
-      }
-    })
+    body: JSON.stringify({ wsUrl, action: "buy", params })
   });
 
   const data = await response.json();
   console.log("📨 Proxy response:", JSON.stringify(data));
 
-  if (data.error) {
-    throw new Error(data.error.message || JSON.stringify(data.error));
-  }
+  if (data.error) throw new Error(data.error);
 
   const contractId = data.buy?.contract_id;
   if (contractId) {
-    console.log(`✅ Trade Executed via proxy! Contract ID: ${contractId}`);
+    console.log(`✅ Trade Executed! Contract ID: ${contractId}`);
     return contractId;
   }
   return null;
@@ -191,9 +223,12 @@ async function executeTrade(direction) {
 
 // ==================== CLOSE CONTRACT VIA CLOUDFLARE PROXY ====================
 async function closeContract(contractId) {
-  if (!DERIV_TOKEN || !contractId || !PROXY_URL || !PROXY_SECRET) return;
+  if (!DERIV_TOKEN || !contractId || !PROXY_URL || !PROXY_SECRET || !DERIV_APP_ID) return;
 
   console.log(`🔄 Closing contract ${contractId} via proxy...`);
+
+  const accountId = await getDerivAccountId();
+  const wsUrl = await getDerivOTP(accountId);
 
   const response = await fetch(PROXY_URL, {
     method: "POST",
@@ -202,13 +237,9 @@ async function closeContract(contractId) {
       "x-proxy-secret": PROXY_SECRET
     },
     body: JSON.stringify({
-      token: DERIV_TOKEN,
-      appId: DERIV_APP_ID,
+      wsUrl,
       action: "sell",
-      params: {
-        sell: contractId,
-        price: 0
-      }
+      params: { sell: contractId, price: 0 }
     })
   });
 
@@ -314,13 +345,13 @@ async function runSummary(daysBack, title) {
     // ==================== TEST MODE ====================
     if (MODE === "test") {
       console.log("🧪 TEST MODE: Firing a direct demo BUY trade via proxy...");
+      const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
+      const tpDollars = parseFloat((STAKE_USD * RISK_REWARD).toFixed(2));
       await sendTelegram(
         `🧪 *Test Trade Initiated*\n` +
-        `Symbol: ${SYMBOL_NAME}\n` +
-        `Direction: BUY\n` +
+        `Symbol: ${SYMBOL_NAME}\nDirection: BUY\n` +
         `Stake: $${STAKE_USD} | Multiplier: ${MULTIPLIER}x\n` +
-        `Proxy: ${PROXY_URL ? "✅ SET" : "❌ NOT SET"}\n` +
-        `SL: $${(STAKE_USD * 0.5).toFixed(2)} | TP: $${(STAKE_USD * RISK_REWARD).toFixed(2)}`
+        `SL: $${slDollars} | TP: $${tpDollars}`
       );
       try {
         const contractId = await executeTrade("BUY");
