@@ -247,6 +247,16 @@ function getFractals(candles) {
   };
 }
 
+async function fetchH1EMA50() {
+  try {
+    const h1 = await fetchCandles(3600, 60);
+    if (!h1 || h1.length < 50) return null;
+    const closes = h1.map(c => parseFloat(c.close));
+    const emaArr = ema(closes, 50);
+    return emaArr[emaArr.length - 1];
+  } catch { return null; }
+}
+
 async function getD1Context() {
   try {
     const d1Candles = await fetchCandles(D1, 2);
@@ -275,6 +285,7 @@ async function runScanMode() {
     if (!candles || candles.length < 50) return;
 
     const i = candles.length - 2;
+    const currentCandleEpoch = candles[i].epoch;
     const closes = candles.map(c => parseFloat(c.close));
     const emaFast = ema(closes, 4);
     const emaSlow = ema(closes, 34);
@@ -296,7 +307,6 @@ async function runScanMode() {
 
       if (slHit) {
         // ── STOP LOSS HIT — Deriv's hard SL already closed the contract ──
-        // Do NOT call closeContract(); Deriv handled it at the broker level.
         settledResult = "LOSS";
         exitReason = "Stop Loss Hit (Deriv hard SL)";
         derivAlreadyClosed = true;
@@ -309,31 +319,45 @@ async function runScanMode() {
       } else {
         // ── PHASE 1: Before TP1 ──
         if (macdFlippedAgainstTrade) {
-          const closedInProfit =
-            (openTrade.direction === "BUY"  && currentPrice >= openTrade.entry) ||
-            (openTrade.direction === "SELL" && currentPrice <= openTrade.entry);
-          settledResult = closedInProfit ? "WIN" : "LOSS";
-          exitReason = closedInProfit
-            ? "MACD Early Exit — Closed in Profit (before TP1)"
-            : "MACD Early Exit — Partial Loss (before SL hit)";
-        } else if (openTrade.direction === "BUY" && currentPrice >= openTrade.tp1) {
-          openTrade.tp1Reached = true;
-          fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
-          await sendTelegram(
-            `🎯 *TP1 Reached — Now Trailing!*\n` +
-            `Symbol: ${SYMBOL_NAME}\nDirection: BUY\n` +
-            `Price: ${currentPrice.toFixed(4)} | TP1 was: ${openTrade.tp1.toFixed(4)}\n\n` +
-            `Trade will now stay open while M5 MACD > 0.\nWill close when momentum fades.`
-          );
-        } else if (openTrade.direction === "SELL" && currentPrice <= openTrade.tp1) {
-          openTrade.tp1Reached = true;
-          fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
-          await sendTelegram(
-            `🎯 *TP1 Reached — Now Trailing!*\n` +
-            `Symbol: ${SYMBOL_NAME}\nDirection: SELL\n` +
-            `Price: ${currentPrice.toFixed(4)} | TP1 was: ${openTrade.tp1.toFixed(4)}\n\n` +
-            `Trade will now stay open while M5 MACD < 0.\nWill close when momentum fades.`
-          );
+          if (!openTrade.macdEarlyFlipEpoch) {
+            // First flip candle — record epoch, wait for 2nd consecutive to confirm
+            openTrade.macdEarlyFlipEpoch = currentCandleEpoch;
+            fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
+          } else if (openTrade.macdEarlyFlipEpoch !== currentCandleEpoch) {
+            // 2nd consecutive candle against trade — confirmed exit
+            const closedInProfit =
+              (openTrade.direction === "BUY"  && currentPrice >= openTrade.entry) ||
+              (openTrade.direction === "SELL" && currentPrice <= openTrade.entry);
+            settledResult = closedInProfit ? "WIN" : "LOSS";
+            exitReason = closedInProfit
+              ? "MACD Early Exit — Closed in Profit (before TP1)"
+              : "MACD Early Exit — Partial Loss (before SL hit)";
+          }
+        } else {
+          // MACD recovered — reset flip tracker
+          if (openTrade.macdEarlyFlipEpoch) {
+            openTrade.macdEarlyFlipEpoch = null;
+            fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
+          }
+          if (openTrade.direction === "BUY" && currentPrice >= openTrade.tp1) {
+            openTrade.tp1Reached = true;
+            fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
+            await sendTelegram(
+              `🎯 *TP1 Reached — Now Trailing!*\n` +
+              `Symbol: ${SYMBOL_NAME}\nDirection: BUY\n` +
+              `Price: ${currentPrice.toFixed(4)} | TP1 was: ${openTrade.tp1.toFixed(4)}\n\n` +
+              `Trade will now stay open while M5 MACD > 0.\nWill close when momentum fades.`
+            );
+          } else if (openTrade.direction === "SELL" && currentPrice <= openTrade.tp1) {
+            openTrade.tp1Reached = true;
+            fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
+            await sendTelegram(
+              `🎯 *TP1 Reached — Now Trailing!*\n` +
+              `Symbol: ${SYMBOL_NAME}\nDirection: SELL\n` +
+              `Price: ${currentPrice.toFixed(4)} | TP1 was: ${openTrade.tp1.toFixed(4)}\n\n` +
+              `Trade will now stay open while M5 MACD < 0.\nWill close when momentum fades.`
+            );
+          }
         }
       }
 
@@ -371,9 +395,8 @@ async function runScanMode() {
       return;
     }
 
-    const currentCandleEpoch = candles[i].epoch;
-    const isoTime = new Date(currentCandleEpoch * 1000).toISOString();
     if (state.lastProcessedEpoch === currentCandleEpoch) return;
+    const isoTime = new Date(currentCandleEpoch * 1000).toISOString();
 
     const opens = candles.map(c => parseFloat(c.open));
     const highs = candles.map(c => parseFloat(c.high));
@@ -404,8 +427,9 @@ async function runScanMode() {
     const fractalBreakUp = fractals.significantHigh !== null && closes[i] > fractals.significantHigh;
     const fractalBreakDown = fractals.significantLow !== null && closes[i] < fractals.significantLow;
 
-    const buySignal = state.waitingFor === "BUY" && fractalBreakUp && separationOk && sma34Slope > 0 && impulseOk && closePosBuy >= 0.7 && closes[i] > opens[i];
-    const sellSignal = state.waitingFor === "SELL" && fractalBreakDown && separationOk && sma34Slope < 0 && impulseOk && closePosSell >= 0.7 && closes[i] < opens[i];
+    const h1Ema50 = await fetchH1EMA50();
+    const buySignal = state.waitingFor === "BUY" && fractalBreakUp && separationOk && sma34Slope > 0 && impulseOk && closePosBuy >= 0.7 && closes[i] > opens[i] && (h1Ema50 === null || closes[i] > h1Ema50);
+    const sellSignal = state.waitingFor === "SELL" && fractalBreakDown && separationOk && sma34Slope < 0 && impulseOk && closePosSell >= 0.7 && closes[i] < opens[i] && (h1Ema50 === null || closes[i] < h1Ema50);
 
     let signalTriggered = false, direction = "", entry, sl, risk, tp1, tp2, tp3;
 
@@ -425,6 +449,7 @@ async function runScanMode() {
       const d1 = await getD1Context();
       const alignment = d1 ? checkAlignment(direction, d1.direction) : "⚠️ D1 data unavailable";
       const timeFormatted = new Date(currentCandleEpoch * 1000).toISOString().replace("T", " ").substring(0, 19);
+      const h1Line = h1Ema50 ? `H1 EMA50:  ${h1Ema50.toFixed(4)}  ✅ Trend aligned\n` : `H1 EMA50:  ⚠️ Data unavailable\n`;
 
       let message = `🚨 ${SYMBOL_NAME.toUpperCase()} CONFIRMED SIGNAL 🚨\n\n` +
         `Direction: ${direction}\nRepo: ${REPO_LABEL}\nTimeframe: M5\n\n` +
@@ -433,7 +458,8 @@ async function runScanMode() {
         `🎯 TP2:    ${tp2.toFixed(4)}  (reference)\n` +
         `🎯 TP3:    ${tp3.toFixed(4)}  (reference)\n\n` +
         `💰 Stake: $${STAKE_USD} | Hard SL: $${slDollars} | Soft TP1: $${tpDollars} | Safety: $${SAFETY_TP_USD}\n` +
-        `📊 Risk:   ${risk.toFixed(2)} points\n🔥 Setup:  Fractal break confirmed with impulse\n` +
+        `📊 Risk:   ${risk.toFixed(2)} points\n${h1Line}` +
+        `🔥 Setup:  Fractal break + H1 trend confirmed\n` +
         `━━━━━━━━━━━━━━━━━━━━\n📅 D1 CANDLE STATUS\n━━━━━━━━━━━━━━━━━━━━\n`;
       if (d1) {
         message += `Direction:  ${d1.direction}\nD1 Open:    ${d1.open.toFixed(4)}\nD1 Current: ${d1.close.toFixed(4)}\n` +
@@ -445,7 +471,8 @@ async function runScanMode() {
       trades.push({
         id: `${SYMBOL}-${isoTime}`, contractId: null, repo: REPO_LABEL,
         symbol: SYMBOL, direction, entry, sl, tp1, tp2, tp3,
-        tp1Reached: false, rr: RISK_REWARD, openTime: timeFormatted, closeTime: null, result: null
+        tp1Reached: false, macdEarlyFlipEpoch: null, rr: RISK_REWARD,
+        openTime: timeFormatted, closeTime: null, result: null
       });
       fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
 
