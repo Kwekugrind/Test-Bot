@@ -113,6 +113,7 @@
     "rr": 1.5,
     "openTime": "2026-07-26 21:45:00",
     "closeTime": null,
-    "result": null
+    "result": null,
+    "macdEarlyFlipEpoch": 1785105300
   }
 ]
