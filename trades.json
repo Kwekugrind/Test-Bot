@@ -112,8 +112,8 @@
     "tp1Reached": false,
     "rr": 1.5,
     "openTime": "2026-07-26 21:45:00",
-    "closeTime": null,
-    "result": null,
+    "closeTime": "2026-07-26T22:45:15.057Z",
+    "result": "LOSS",
     "macdEarlyFlipEpoch": 1785105300
   }
 ]
