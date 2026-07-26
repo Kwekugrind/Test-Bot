@@ -17,10 +17,10 @@ const ATR_PERIOD = 14;
 const FRACTAL_LOOKBACK = 8;
 const SETUP_EXPIRY_BARS = 15;
 const RISK_REWARD = 1.5;
-const STAKE_USD = 3;
+const STAKE_USD = 10;
 const MULTIPLIER = 40;
 
-const SAFETY_TP_USD = 15;
+const SAFETY_TP_USD = 30;
 const MARKET_DATA_APP_ID = "1089";
 const DERIV_APP_ID = process.env.DERIV_APP_ID;
 
@@ -64,7 +64,8 @@ async function runSummary(daysBack, title) {
   const losses = periodTrades.filter(t => t.result === "LOSS").length;
   const netR = periodTrades.reduce((s, t) => s + (t.result === "WIN" ? t.rr : -1), 0);
   const winRate = ((wins / periodTrades.length) * 100).toFixed(1);
-  const netDollars = parseFloat((netR * (STAKE_USD * 0.5)).toFixed(2));
+  const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
+  const netDollars = parseFloat((netR * slDollars).toFixed(2));
   await sendTelegram(
     `📊 *${REPO_LABEL} — ${title}*\n\n` +
     `Trades:    ${periodTrades.length}\n` +
@@ -296,9 +297,8 @@ async function runScanMode() {
           exitReason = "MACD Trail Exit (after TP1)";
         }
       } else {
-        // ── PHASE 1: Before TP1 — MACD flip or TP1 check ──
+        // ── PHASE 1: Before TP1 ──
         if (macdFlippedAgainstTrade) {
-          // Result depends on whether price is above or below entry
           const closedInProfit =
             (openTrade.direction === "BUY"  && currentPrice >= openTrade.entry) ||
             (openTrade.direction === "SELL" && currentPrice <= openTrade.entry);
