@@ -3,8 +3,8 @@ import fetch from "node-fetch";
 import fs from "fs";
 
 // ==================== REPOSITORY CONFIGURATION ====================
-const SYMBOL = "R_100";          // Legacy symbol for market data (ws.binaryws.com)
-const TRADING_SYMBOL = "1HZ100V"; // New symbol for trading API (api.derivws.com)
+const SYMBOL = "R_100";          // Market data symbol (ws.binaryws.com)
+const TRADING_SYMBOL = "R_100";  // Trading symbol (api.derivws.com) — Volatility 100 Index (normal, 2s tick)
 const SYMBOL_NAME = "Volatility 100 Index";
 const REPO_LABEL = "Test Bot (V100)";
 // ==================================================================
