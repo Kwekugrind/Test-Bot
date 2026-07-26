@@ -275,22 +275,32 @@ async function runScanMode() {
     if (!candles || candles.length < 50) return;
 
     const i = candles.length - 2;
+    const closes = candles.map(c => parseFloat(c.close));
+    const emaFast = ema(closes, 4);
+    const emaSlow = ema(closes, 34);
+    const macd = emaFast[i] - emaSlow[i];
 
     let openTrade = trades.find(t => t.result === null);
     if (openTrade) {
       const currentPrice = await getCurrentPrice();
-      const closes = candles.map(c => parseFloat(c.close));
-      const emaFast = ema(closes, 4);
-      const emaSlow = ema(closes, 34);
-      const macd = emaFast[i] - emaSlow[i];
       const macdFlippedAgainstTrade =
         (openTrade.direction === "BUY" && macd < 0) ||
         (openTrade.direction === "SELL" && macd > 0);
+      const slHit =
+        (openTrade.direction === "BUY"  && currentPrice <= openTrade.sl) ||
+        (openTrade.direction === "SELL" && currentPrice >= openTrade.sl);
 
       let settledResult = null;
       let exitReason = "";
+      let derivAlreadyClosed = false;
 
-      if (openTrade.tp1Reached) {
+      if (slHit) {
+        // ── STOP LOSS HIT — Deriv's hard SL already closed the contract ──
+        // Do NOT call closeContract(); Deriv handled it at the broker level.
+        settledResult = "LOSS";
+        exitReason = "Stop Loss Hit (Deriv hard SL)";
+        derivAlreadyClosed = true;
+      } else if (openTrade.tp1Reached) {
         // ── PHASE 2: After TP1 — trail with MACD, always a WIN ──
         if (macdFlippedAgainstTrade) {
           settledResult = "WIN";
@@ -328,7 +338,9 @@ async function runScanMode() {
       }
 
       if (settledResult) {
-        await closeContract(openTrade.contractId);
+        // Only call closeContract for MACD exits — SL was already closed by Deriv
+        if (!derivAlreadyClosed) await closeContract(openTrade.contractId);
+
         openTrade.result = settledResult;
         openTrade.closeTime = new Date().toISOString();
         fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
@@ -363,7 +375,6 @@ async function runScanMode() {
     const isoTime = new Date(currentCandleEpoch * 1000).toISOString();
     if (state.lastProcessedEpoch === currentCandleEpoch) return;
 
-    const closes = candles.map(c => parseFloat(c.close));
     const opens = candles.map(c => parseFloat(c.open));
     const highs = candles.map(c => parseFloat(c.high));
     const lows = candles.map(c => parseFloat(c.low));
