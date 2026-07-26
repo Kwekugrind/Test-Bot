@@ -33,10 +33,10 @@ const TRIGGER_SOURCE = process.env.TRIGGER_SOURCE;
 const MODE = process.env.MODE && process.env.MODE.trim() !== "" ? process.env.MODE.trim() : "scan";
 
 console.log("=== STARTUP DEBUG ===");
-console.log(`DERIV_API_TOKEN: ${DERIV_TOKEN ? `SET (${DERIV_TOKEN.length} chars, starts: ${DERIV_TOKEN.substring(0,4)}***)` : "NOT SET"}`);
-console.log(`DERIV_APP_ID:    ${DERIV_APP_ID ? `SET (${DERIV_APP_ID.length} chars)` : "NOT SET"}`);
-console.log(`PROXY_URL:       ${PROXY_URL ? `SET` : "NOT SET"}`);
-console.log(`PROXY_SECRET:    ${PROXY_SECRET ? `SET (${PROXY_SECRET.length} chars)` : "NOT SET"}`);
+console.log(`DERIV_API_TOKEN: ${DERIV_TOKEN ? "SET" : "NOT SET"}`);
+console.log(`DERIV_APP_ID:    ${DERIV_APP_ID ? "SET" : "NOT SET"}`);
+console.log(`PROXY_URL:       ${PROXY_URL ? "SET" : "NOT SET"}`);
+console.log(`PROXY_SECRET:    ${PROXY_SECRET ? "SET" : "NOT SET"}`);
 console.log(`MODE:            ${MODE}`);
 console.log("=====================");
 
