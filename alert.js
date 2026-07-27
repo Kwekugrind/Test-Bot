@@ -3,8 +3,8 @@ import fetch from "node-fetch";
 import fs from "fs";
 
 // ==================== REPOSITORY CONFIGURATION ====================
-const SYMBOL = "R_100";          // Market data symbol (ws.binaryws.com)
-const TRADING_SYMBOL = "R_100";  // Trading symbol (api.derivws.com) — Volatility 100 Index (normal, 2s tick)
+const SYMBOL = "R_100";
+const TRADING_SYMBOL = "R_100";
 const SYMBOL_NAME = "Volatility 100 Index";
 const REPO_LABEL = "Test Bot (V100)";
 // ==================================================================
@@ -287,82 +287,84 @@ async function runScanMode() {
     const i = candles.length - 2;
     const currentCandleEpoch = candles[i].epoch;
     const closes = candles.map(c => parseFloat(c.close));
+
+    // ── Dual MACD: slow(8,100) trails winners, fast(4,34) cuts losers ──
     const emaFast = ema(closes, 4);
     const emaSlow = ema(closes, 34);
-    const macd = emaFast[i] - emaSlow[i];
+    const ema8    = ema(closes, 8);
+    const ema100  = ema(closes, 100);
+    const macdFast = emaFast[i] - emaSlow[i];   // 4,34 — reacts quickly, cuts losses
+    const macdSlow = ema8[i]   - ema100[i];     // 8,100 — slow trail, lets winners run
 
     let openTrade = trades.find(t => t.result === null);
+
     if (openTrade) {
       const currentPrice = await getCurrentPrice();
-      const macdFlippedAgainstTrade =
-        (openTrade.direction === "BUY" && macd < 0) ||
-        (openTrade.direction === "SELL" && macd > 0);
-      const slHit =
-        (openTrade.direction === "BUY"  && currentPrice <= openTrade.sl) ||
-        (openTrade.direction === "SELL" && currentPrice >= openTrade.sl);
+
+      const inProfit = (openTrade.direction === "BUY"  && currentPrice >= openTrade.entry) ||
+                       (openTrade.direction === "SELL" && currentPrice <= openTrade.entry);
+
+      // Reset 2-candle flip tracker when price crosses entry (profit mode changes)
+      if (openTrade.lastInProfit !== null && openTrade.lastInProfit !== inProfit) {
+        openTrade.macdEarlyFlipEpoch = null;
+      }
+      openTrade.lastInProfit = inProfit;
+
+      // Select which MACD controls the exit
+      const activeMACD = inProfit ? macdSlow : macdFast;
+      const macdFlipped = (openTrade.direction === "BUY"  && activeMACD < 0) ||
+                          (openTrade.direction === "SELL" && activeMACD > 0);
+
+      const slHit = (openTrade.direction === "BUY"  && currentPrice <= openTrade.sl) ||
+                    (openTrade.direction === "SELL" && currentPrice >= openTrade.sl);
 
       let settledResult = null;
       let exitReason = "";
       let derivAlreadyClosed = false;
 
       if (slHit) {
-        // ── STOP LOSS HIT — Deriv's hard SL already closed the contract ──
         settledResult = "LOSS";
         exitReason = "Stop Loss Hit (Deriv hard SL)";
         derivAlreadyClosed = true;
-      } else if (openTrade.tp1Reached) {
-        // ── PHASE 2: After TP1 — trail with MACD, always a WIN ──
-        if (macdFlippedAgainstTrade) {
-          settledResult = "WIN";
-          exitReason = "MACD Trail Exit (after TP1)";
-        }
       } else {
-        // ── PHASE 1: Before TP1 ──
-        if (macdFlippedAgainstTrade) {
+        // TP1 notification (informational only — no longer controls exit phase)
+        if (!openTrade.tp1Reached) {
+          if ((openTrade.direction === "BUY"  && currentPrice >= openTrade.tp1) ||
+              (openTrade.direction === "SELL" && currentPrice <= openTrade.tp1)) {
+            openTrade.tp1Reached = true;
+            fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
+            const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
+            const tpDollars = parseFloat((slDollars * RISK_REWARD).toFixed(2));
+            await sendTelegram(
+              `🎯 *TP1 Hit!*\n` +
+              `Symbol: ${SYMBOL_NAME}\nDirection: ${openTrade.direction}\n` +
+              `Price: ${currentPrice.toFixed(4)} | TP1: ${openTrade.tp1.toFixed(4)}\n\n` +
+              `Now trailing with MACD(8,100). Will hold while trend continues.\n` +
+              `💰 Stake: $${STAKE_USD} | Soft TP1: $${tpDollars} | Safety: $${SAFETY_TP_USD}`
+            );
+          }
+        }
+
+        // 2-candle MACD confirmation exit
+        if (macdFlipped) {
           if (!openTrade.macdEarlyFlipEpoch) {
-            // First flip candle — record epoch, wait for 2nd consecutive to confirm
             openTrade.macdEarlyFlipEpoch = currentCandleEpoch;
             fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
           } else if (openTrade.macdEarlyFlipEpoch !== currentCandleEpoch) {
-            // 2nd consecutive candle against trade — confirmed exit
-            const closedInProfit =
-              (openTrade.direction === "BUY"  && currentPrice >= openTrade.entry) ||
-              (openTrade.direction === "SELL" && currentPrice <= openTrade.entry);
-            settledResult = closedInProfit ? "WIN" : "LOSS";
-            exitReason = closedInProfit
-              ? "MACD Early Exit — Closed in Profit (before TP1)"
-              : "MACD Early Exit — Partial Loss (before SL hit)";
+            settledResult = inProfit ? "WIN" : "LOSS";
+            exitReason = inProfit
+              ? "MACD(8,100) Trail Exit — held above entry"
+              : "MACD(4,34) Early Exit — price below entry";
           }
         } else {
-          // MACD recovered — reset flip tracker
           if (openTrade.macdEarlyFlipEpoch) {
             openTrade.macdEarlyFlipEpoch = null;
             fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
-          }
-          if (openTrade.direction === "BUY" && currentPrice >= openTrade.tp1) {
-            openTrade.tp1Reached = true;
-            fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
-            await sendTelegram(
-              `🎯 *TP1 Reached — Now Trailing!*\n` +
-              `Symbol: ${SYMBOL_NAME}\nDirection: BUY\n` +
-              `Price: ${currentPrice.toFixed(4)} | TP1 was: ${openTrade.tp1.toFixed(4)}\n\n` +
-              `Trade will now stay open while M5 MACD > 0.\nWill close when momentum fades.`
-            );
-          } else if (openTrade.direction === "SELL" && currentPrice <= openTrade.tp1) {
-            openTrade.tp1Reached = true;
-            fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
-            await sendTelegram(
-              `🎯 *TP1 Reached — Now Trailing!*\n` +
-              `Symbol: ${SYMBOL_NAME}\nDirection: SELL\n` +
-              `Price: ${currentPrice.toFixed(4)} | TP1 was: ${openTrade.tp1.toFixed(4)}\n\n` +
-              `Trade will now stay open while M5 MACD < 0.\nWill close when momentum fades.`
-            );
           }
         }
       }
 
       if (settledResult) {
-        // Only call closeContract for MACD exits — SL was already closed by Deriv
         if (!derivAlreadyClosed) await closeContract(openTrade.contractId);
 
         openTrade.result = settledResult;
@@ -371,10 +373,10 @@ async function runScanMode() {
 
         const icon = settledResult === "WIN" ? "✅" : "❌";
         const contractType = openTrade.direction === "BUY" ? "MULTUP" : "MULTDOWN";
-        const phase = openTrade.tp1Reached ? "Trailed past TP1 ✅" : "Closed before TP1";
         const durationMins = Math.round((new Date(openTrade.closeTime) - new Date(openTrade.openTime)) / 60000);
         const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
         const tpDollars = parseFloat((slDollars * RISK_REWARD).toFixed(2));
+        const tp1Status = openTrade.tp1Reached ? "✅ TP1 hit" : "❌ TP1 not reached";
 
         await sendTelegram(
           `${icon} *${REPO_LABEL} — Trade ${settledResult}*\n\n` +
@@ -383,8 +385,7 @@ async function runScanMode() {
           `📍 Entry:  ${openTrade.entry.toFixed(4)}\n` +
           `🏁 Exit:   ${currentPrice.toFixed(4)}\n` +
           `🛑 SL:     ${openTrade.sl.toFixed(4)}  ($${slDollars} hard)\n` +
-          `🎯 TP1:    ${openTrade.tp1.toFixed(4)}  ($${tpDollars} soft)\n\n` +
-          `Phase:     ${phase}\n` +
+          `🎯 TP1:    ${openTrade.tp1.toFixed(4)}  ($${tpDollars} soft)  ${tp1Status}\n\n` +
           `Reason:    ${exitReason}\n` +
           `Duration:  ~${durationMins} min\n\n` +
           `Opened:  ${openTrade.openTime.substring(0, 16).replace("T", " ")} UTC\n` +
@@ -454,7 +455,7 @@ async function runScanMode() {
       let message = `🚨 ${SYMBOL_NAME.toUpperCase()} CONFIRMED SIGNAL 🚨\n\n` +
         `Direction: ${direction}\nRepo: ${REPO_LABEL}\nTimeframe: M5\n\n` +
         `📍 Entry:  ${entry.toFixed(4)}\n🛑 SL:     ${sl.toFixed(4)}\n` +
-        `🎯 TP1:    ${tp1.toFixed(4)}  → trail with MACD after this\n` +
+        `🎯 TP1:    ${tp1.toFixed(4)}  → trail with MACD(8,100) after this\n` +
         `🎯 TP2:    ${tp2.toFixed(4)}  (reference)\n` +
         `🎯 TP3:    ${tp3.toFixed(4)}  (reference)\n\n` +
         `💰 Stake: $${STAKE_USD} | Hard SL: $${slDollars} | Soft TP1: $${tpDollars} | Safety: $${SAFETY_TP_USD}\n` +
@@ -471,8 +472,8 @@ async function runScanMode() {
       trades.push({
         id: `${SYMBOL}-${isoTime}`, contractId: null, repo: REPO_LABEL,
         symbol: SYMBOL, direction, entry, sl, tp1, tp2, tp3,
-        tp1Reached: false, macdEarlyFlipEpoch: null, rr: RISK_REWARD,
-        openTime: timeFormatted, closeTime: null, result: null
+        tp1Reached: false, macdEarlyFlipEpoch: null, lastInProfit: null,
+        rr: RISK_REWARD, openTime: timeFormatted, closeTime: null, result: null
       });
       fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
 
