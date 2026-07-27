@@ -115,5 +115,23 @@
     "closeTime": "2026-07-26T22:45:15.057Z",
     "result": "LOSS",
     "macdEarlyFlipEpoch": 1785105300
+  },
+  {
+    "id": "R_100-2026-07-27T03:15:00.000Z",
+    "contractId": 6973085199,
+    "repo": "Test Bot (V100)",
+    "symbol": "R_100",
+    "direction": "SELL",
+    "entry": 532.11,
+    "sl": 543.85,
+    "tp1": 514.5,
+    "tp2": 508.63,
+    "tp3": 496.89,
+    "tp1Reached": false,
+    "macdEarlyFlipEpoch": null,
+    "rr": 1.5,
+    "openTime": "2026-07-27 03:15:00",
+    "closeTime": null,
+    "result": null
   }
 ]
