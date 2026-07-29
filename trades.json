@@ -152,5 +152,24 @@
     "openTime": "2026-07-27 23:35:00",
     "closeTime": "2026-07-28T14:25:20.778Z",
     "result": "WIN"
+  },
+  {
+    "id": "R_100-2026-07-29T03:35:00.000Z",
+    "contractId": 7223674179,
+    "repo": "Test Bot (V100)",
+    "symbol": "R_100",
+    "direction": "BUY",
+    "entry": 570.24,
+    "sl": 558.42,
+    "tp1": 587.97,
+    "tp2": 593.8800000000001,
+    "tp3": 605.7000000000002,
+    "tp1Reached": false,
+    "macdEarlyFlipEpoch": null,
+    "lastInProfit": null,
+    "rr": 1.5,
+    "openTime": "2026-07-29 03:35:00",
+    "closeTime": null,
+    "result": null
   }
 ]
