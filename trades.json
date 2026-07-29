@@ -188,7 +188,7 @@
     "lastInProfit": false,
     "rr": 1.5,
     "openTime": "2026-07-29 11:50:00",
-    "closeTime": null,
-    "result": null
+    "closeTime": "2026-07-29T13:45:21.621Z",
+    "result": "LOSS"
   }
 ]
