@@ -228,5 +228,24 @@
     "openTime": "2026-07-29 20:00:00",
     "closeTime": "2026-07-29T21:05:27.526Z",
     "result": "LOSS"
+  },
+  {
+    "id": "R_100-2026-07-31T20:10:00.000Z",
+    "contractId": 7548571519,
+    "repo": "Test Bot (V100)",
+    "symbol": "R_100",
+    "direction": "BUY",
+    "entry": 592.81,
+    "sl": 577.68,
+    "tp1": 615.5049999999999,
+    "tp2": 623.0699999999999,
+    "tp3": 638.1999999999999,
+    "tp1Reached": false,
+    "macdEarlyFlipEpoch": null,
+    "lastInProfit": null,
+    "rr": 1.5,
+    "openTime": "2026-07-31 20:10:00",
+    "closeTime": null,
+    "result": null
   }
 ]
