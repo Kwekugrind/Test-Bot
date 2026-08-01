@@ -20,7 +20,7 @@ const RISK_REWARD = 1.5;
 const STAKE_USD = 10;
 const MULTIPLIER = 400;
 
-const SAFETY_TP_USD = 30;
+const SAFETY_TP_USD = 15;
 const MARKET_DATA_APP_ID = "1089";
 const DERIV_APP_ID = process.env.DERIV_APP_ID;
 
@@ -250,7 +250,6 @@ function checkAlignment(signalDir, d1Dir) { if (signalDir === "BUY" && d1Dir ===
 
 async function runScanMode() {
   try {
-    // Check for manual close commands from Telegram first
     const tgCommand = await checkTelegramCommands();
     fs.writeFileSync("state.json", JSON.stringify(state, null, 2));
     if (tgCommand) {
