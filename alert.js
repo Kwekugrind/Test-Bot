@@ -79,13 +79,13 @@ async function runSummary(daysBack, title) {
   if (MODE === "weekly")  { await runSummary(7,  "Weekly Report");  process.exit(0); }
   if (MODE === "monthly") { await runSummary(30, "Monthly Report"); process.exit(0); }
   if (MODE === "test") {
-    console.log("🧪 TEST MODE: Firing a direct demo BUY trade via proxy...");
+    console.log("🧪 TEST MODE: Firing a direct BUY trade via proxy...");
     const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
     const tpDollars = parseFloat((slDollars * RISK_REWARD).toFixed(2));
     await sendTelegram(`🧪 *Test Trade Initiated*\nSymbol: ${SYMBOL_NAME}\nDirection: BUY\nStake: $${STAKE_USD} | Multiplier: ${MULTIPLIER}x\nSL: $${slDollars} (hard) | TP1: $${tpDollars} (soft) | Safety TP: $${SAFETY_TP_USD} (hard ceiling)`);
     try {
       const contractId = await executeTrade("BUY");
-      if (contractId) { await sendTelegram(`✅ *Test Trade Executed Successfully!*\nContract ID: \`${contractId}\`\nCheck your Deriv demo account to confirm the open position.`); }
+      if (contractId) { await sendTelegram(`✅ *Test Trade Executed Successfully!*\nContract ID: \`${contractId}\`\nCheck your Deriv account to confirm the open position.`); }
       else { await sendTelegram(`⚠️ *Test Trade Returned Null*\nCheck Actions logs for details.`); }
     } catch (err) { console.error("❌ Test trade error:", err.message); await sendTelegram(`❌ *Test Trade Failed*\nError: ${err.message}\n\nCheck Actions logs for full details.`); }
     process.exit(0);
@@ -97,26 +97,37 @@ async function runSummary(daysBack, title) {
 let state = { waitingFor: null, setupEpoch: null, lastProcessedEpoch: null };
 try { if (fs.existsSync("state.json")) state = JSON.parse(fs.readFileSync("state.json")); } catch (e) { console.log("State load error, starting fresh."); }
 
-function openDerivWS() { return new WebSocket(`wss://ws.binaryws.com/websockets/v3?app_id=${MARKET_DATA_APP_ID}`, { headers: { "Origin": "https://deriv.com" } }); }
+function openWS() { return new WebSocket(`wss://ws.binaryws.com/websockets/v3?app_id=${MARKET_DATA_APP_ID}`, { headers: { "Origin": "https://deriv.com" } }); }
+
+async function withRetry(fn, retries = 3, delayMs = 3000) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try { return await fn(); }
+    catch (err) {
+      if (attempt === retries) throw err;
+      console.log(`Attempt ${attempt} failed (${err.message}). Retrying in ${delayMs / 1000}s...`);
+      await new Promise(r => setTimeout(r, delayMs));
+    }
+  }
+}
 
 async function fetchCandles(granularity, count = CANDLES) {
-  return new Promise((resolve, reject) => {
-    const ws = openDerivWS();
-    const timeout = setTimeout(() => { ws.terminate(); reject(new Error("Timeout")); }, 15000);
+  return withRetry(() => new Promise((resolve, reject) => {
+    const ws = openWS();
+    const timeout = setTimeout(() => { ws.terminate(); reject(new Error("Timeout")); }, 30000);
     ws.on("open", () => ws.send(JSON.stringify({ ticks_history: SYMBOL, adjust_start_time: 1, count, end: "latest", style: "candles", granularity })));
     ws.on("message", (data) => { const r = JSON.parse(data); if (r.error) { clearTimeout(timeout); reject(new Error(r.error.message)); ws.close(); } if (r.candles) { clearTimeout(timeout); resolve(r.candles); ws.close(); } });
     ws.on("error", (err) => { clearTimeout(timeout); reject(err); });
-  });
+  }));
 }
 
 async function getCurrentPrice() {
-  return new Promise((resolve, reject) => {
-    const ws = openDerivWS();
-    const timeout = setTimeout(() => { ws.terminate(); reject(new Error("Timeout")); }, 10000);
+  return withRetry(() => new Promise((resolve, reject) => {
+    const ws = openWS();
+    const timeout = setTimeout(() => { ws.terminate(); reject(new Error("Timeout")); }, 20000);
     ws.on("open", () => ws.send(JSON.stringify({ ticks_history: SYMBOL, count: 1, end: "latest" })));
     ws.on("message", (data) => { const r = JSON.parse(data); if (r.history && r.history.prices) { clearTimeout(timeout); resolve(parseFloat(r.history.prices[0])); ws.close(); } });
     ws.on("error", (err) => { clearTimeout(timeout); reject(err); });
-  });
+  }));
 }
 
 async function getDerivAccountId() {
@@ -125,9 +136,9 @@ async function getDerivAccountId() {
   if (!res.ok) throw new Error(`getAccounts failed: ${JSON.stringify(json.errors || json)}`);
   const accounts = json.data;
   if (!accounts || accounts.length === 0) throw new Error("No Deriv accounts found");
-  const demo = accounts.find(a => a.account_type === "demo") || accounts[0];
-  console.log(`   Account ID: ${demo.account_id} (${demo.account_type})`);
-  return demo.account_id;
+  const account = accounts.find(a => a.account_type !== "demo") || accounts[0];
+  console.log(`   Account ID: ${account.account_id} (${account.account_type})`);
+  return account.account_id;
 }
 
 async function getDerivOTP(accountId) {
