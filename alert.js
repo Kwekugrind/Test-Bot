@@ -51,6 +51,14 @@ async function sendTelegram(message) {
   } catch (err) { console.error("❌ Telegram error:", err.message); }
 }
 
+function formatDuration(mins) {
+  if (mins < 60) return `~${mins} min`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  const hStr = `${h} hour${h !== 1 ? 's' : ''}`;
+  return m > 0 ? `~${hStr} ${m} min` : `~${hStr}`;
+}
+
 async function runSummary(daysBack, title) {
   let trades = fs.existsSync("trades.json") ? JSON.parse(fs.readFileSync("trades.json")) : [];
   const cutoff = new Date();
@@ -387,6 +395,12 @@ async function runScanMode() {
         const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
         const tpDollars = parseFloat((slDollars * RISK_REWARD).toFixed(2));
         const tp1Status = openTrade.tp1Reached ? "✅ TP1 hit" : "❌ TP1 not reached";
+        const risk = openTrade.direction === "BUY" ? openTrade.entry - openTrade.sl : openTrade.sl - openTrade.entry;
+        const isHardSL = exitReason.includes("Stop Loss Hit");
+        const pnlDollars = isHardSL
+          ? -slDollars
+          : parseFloat(((openTrade.direction === "BUY" ? currentPrice - openTrade.entry : openTrade.entry - currentPrice) / risk * slDollars).toFixed(2));
+        const pnlStr = pnlDollars >= 0 ? `+$${pnlDollars.toFixed(2)}` : `-$${Math.abs(pnlDollars).toFixed(2)}`;
 
         await sendTelegram(
           `${icon} *${REPO_LABEL} — Trade ${settledResult}*\n\n` +
@@ -396,8 +410,9 @@ async function runScanMode() {
           `🏁 Exit:   ${currentPrice.toFixed(4)}\n` +
           `🛑 SL:     ${openTrade.sl.toFixed(4)}  ($${slDollars} hard)\n` +
           `🎯 TP1:    ${openTrade.tp1.toFixed(4)}  ($${tpDollars} soft)  ${tp1Status}\n\n` +
+          `💵 P&L:    ${pnlStr}\n` +
           `Reason:    ${exitReason}\n` +
-          `Duration:  ~${durationMins} min\n\n` +
+          `Duration:  ${formatDuration(durationMins)}\n\n` +
           `Opened:  ${openTrade.openTime.substring(0, 16).replace("T", " ")} UTC\n` +
           `Closed:  ${openTrade.closeTime.substring(0, 16).replace("T", " ")} UTC\n` +
           (openTrade.contractId ? `Contract: \`${openTrade.contractId}\`` : "")
