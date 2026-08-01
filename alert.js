@@ -74,10 +74,69 @@ async function runSummary(daysBack, title) {
   await sendTelegram(`📊 *${REPO_LABEL} — ${title}*\n\nTrades:    ${periodTrades.length}\nWins:      ${wins}  |  Losses: ${losses}\nWin Rate:  ${winRate}%\nNet R:     ${netR.toFixed(1)}R\nNet P&L:   $${netDollars >= 0 ? "+" : ""}${netDollars}`);
 }
 
+let state = { waitingFor: null, setupEpoch: null, lastProcessedEpoch: null, lastTgUpdateId: 0 };
+try { if (fs.existsSync("state.json")) state = { ...state, ...JSON.parse(fs.readFileSync("state.json")) }; } catch (e) { console.log("State load error, starting fresh."); }
+
+async function checkTelegramCommands() {
+  if (!TG_TOKEN || !TG_CHAT) return null;
+  try {
+    const offset = state.lastTgUpdateId ? state.lastTgUpdateId + 1 : 0;
+    const res = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/getUpdates?offset=${offset}&limit=20&timeout=0`);
+    const data = await res.json();
+    if (!data.ok || !data.result || data.result.length === 0) return null;
+    let command = null;
+    for (const update of data.result) {
+      state.lastTgUpdateId = Math.max(state.lastTgUpdateId || 0, update.update_id);
+      const msg = update.message;
+      if (!msg) continue;
+      if (String(msg.chat.id) !== String(TG_CHAT)) continue;
+      const text = (msg.text || "").toLowerCase().trim();
+      if (text === "/close win" || text === "/closewin") command = "WIN";
+      else if (text === "/close loss" || text === "/closeloss") command = "LOSS";
+    }
+    return command;
+  } catch (err) { console.error("Telegram poll error:", err.message); return null; }
+}
+
+async function executeManualClose(result, reason) {
+  let trades = fs.existsSync("trades.json") ? JSON.parse(fs.readFileSync("trades.json")) : [];
+  const openTrade = trades.find(t => t.result === null);
+  if (!openTrade) {
+    await sendTelegram(`⚠️ *${REPO_LABEL}*\n\nNo open trade found to close.`);
+    return;
+  }
+  console.log(`🔄 Manual ${result} close requested: ${reason}`);
+  let currentPrice = null;
+  try { currentPrice = await getCurrentPrice(); } catch (e) { console.error("Price fetch error:", e.message); }
+  try { await closeContract(openTrade.contractId); } catch (e) { console.error("Close contract error:", e.message); }
+  openTrade.result = result;
+  openTrade.closeTime = new Date().toISOString();
+  fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
+  const icon = result === "WIN" ? "✅" : "❌";
+  const contractType = openTrade.direction === "BUY" ? "MULTUP" : "MULTDOWN";
+  const durationMins = Math.round((new Date(openTrade.closeTime) - new Date(openTrade.openTime)) / 60000);
+  const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
+  const tpDollars = parseFloat((slDollars * RISK_REWARD).toFixed(2));
+  const tp1Status = openTrade.tp1Reached ? "✅ TP1 hit" : "❌ TP1 not reached";
+  const exitPriceStr = currentPrice ? currentPrice.toFixed(4) : "unknown";
+  await sendTelegram(`${icon} *${REPO_LABEL} — Trade ${result}*\n\nDirection: ${openTrade.direction} (${contractType})\nSymbol:    ${SYMBOL_NAME}\n\n📍 Entry:  ${openTrade.entry.toFixed(4)}\n🏁 Exit:   ${exitPriceStr}\n🛑 SL:     ${openTrade.sl.toFixed(4)}  ($${slDollars} hard)\n🎯 TP1:    ${openTrade.tp1.toFixed(4)}  ($${tpDollars} soft)  ${tp1Status}\n\nReason:    ${reason}\nDuration:  ${formatDuration(durationMins)}\n\nOpened:  ${openTrade.openTime.substring(0,16).replace("T"," ")} UTC\nClosed:  ${openTrade.closeTime.substring(0,16).replace("T"," ")} UTC\n` + (openTrade.contractId ? `Contract: \`${openTrade.contractId}\`` : ""));
+  console.log(`✅ Manual close complete: ${result}`);
+}
+
 (async () => {
   if (MODE === "daily")   { await runSummary(1,  "Daily Report");   process.exit(0); }
   if (MODE === "weekly")  { await runSummary(7,  "Weekly Report");  process.exit(0); }
   if (MODE === "monthly") { await runSummary(30, "Monthly Report"); process.exit(0); }
+  if (MODE === "close_win") {
+    await executeManualClose("WIN", "Manual Close — Profit taken");
+    fs.writeFileSync("state.json", JSON.stringify(state, null, 2));
+    process.exit(0);
+  }
+  if (MODE === "close_loss") {
+    await executeManualClose("LOSS", "Manual Close — Loss accepted");
+    fs.writeFileSync("state.json", JSON.stringify(state, null, 2));
+    process.exit(0);
+  }
   if (MODE === "test") {
     console.log("🧪 TEST MODE: Firing a direct BUY trade via proxy...");
     const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
@@ -93,9 +152,6 @@ async function runSummary(daysBack, title) {
   if (TRIGGER_SOURCE !== "cronjob") { console.log("⛔ Blocked: Not a cronjob trigger."); process.exit(0); }
   await runScanMode();
 })();
-
-let state = { waitingFor: null, setupEpoch: null, lastProcessedEpoch: null };
-try { if (fs.existsSync("state.json")) state = JSON.parse(fs.readFileSync("state.json")); } catch (e) { console.log("State load error, starting fresh."); }
 
 function openWS() { return new WebSocket(`wss://ws.binaryws.com/websockets/v3?app_id=${MARKET_DATA_APP_ID}`, { headers: { "Origin": "https://deriv.com" } }); }
 
@@ -153,10 +209,10 @@ async function executeTrade(direction) {
   if (!DERIV_TOKEN) { console.log("⚠️ DERIV_API_TOKEN not set. Skipping."); return null; }
   if (!DERIV_APP_ID) { console.log("⚠️ DERIV_APP_ID not set. Skipping."); return null; }
   if (!PROXY_URL || !PROXY_SECRET) { console.log("⚠️ PROXY_URL or PROXY_SECRET not set. Skipping."); return null; }
-  const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
   console.log(`🔄 Sending ${direction} trade via Cloudflare proxy...`);
   const accountId = await getDerivAccountId();
   const wsUrl = await getDerivOTP(accountId);
+  const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
   const params = { buy: "1", price: STAKE_USD, parameters: { contract_type: direction === "BUY" ? "MULTUP" : "MULTDOWN", underlying_symbol: TRADING_SYMBOL, currency: "USD", amount: STAKE_USD, basis: "stake", multiplier: MULTIPLIER, limit_order: { stop_loss: slDollars, take_profit: SAFETY_TP_USD } } };
   const response = await fetch(PROXY_URL, { method: "POST", headers: { "Content-Type": "application/json", "x-proxy-secret": PROXY_SECRET }, body: JSON.stringify({ wsUrl, action: "buy", params }) });
   const data = await response.json();
@@ -194,6 +250,16 @@ function checkAlignment(signalDir, d1Dir) { if (signalDir === "BUY" && d1Dir ===
 
 async function runScanMode() {
   try {
+    // Check for manual close commands from Telegram first
+    const tgCommand = await checkTelegramCommands();
+    fs.writeFileSync("state.json", JSON.stringify(state, null, 2));
+    if (tgCommand) {
+      const reason = tgCommand === "WIN" ? "Manual Close via Telegram — Profit taken" : "Manual Close via Telegram — Loss accepted";
+      await executeManualClose(tgCommand, reason);
+      fs.writeFileSync("state.json", JSON.stringify(state, null, 2));
+      return;
+    }
+
     let trades = fs.existsSync("trades.json") ? JSON.parse(fs.readFileSync("trades.json")) : [];
     const candles = await fetchCandles(M5, CANDLES);
     if (!candles || candles.length < 50) return;
@@ -289,7 +355,7 @@ async function runScanMode() {
       let message = `🚨 ${SYMBOL_NAME.toUpperCase()} CONFIRMED SIGNAL 🚨\n\nDirection: ${direction}\nRepo: ${REPO_LABEL}\nTimeframe: M5\n\n📍 Entry:  ${entry.toFixed(4)}\n🛑 SL:     ${sl.toFixed(4)}\n🎯 TP1:    ${tp1.toFixed(4)}  → trail with MACD(8,100) after this\n🎯 TP2:    ${tp2.toFixed(4)}  (reference)\n🎯 TP3:    ${tp3.toFixed(4)}  (reference)\n\n💰 Stake: $${STAKE_USD} | Hard SL: $${slDollars} | Soft TP1: $${tpDollars} | Safety: $${SAFETY_TP_USD}\n📊 Risk:   ${risk.toFixed(2)} points\n${h1Line}📈 H4:     ${h4Dir} ✅ Direction confirmed\n🔥 Setup:  Fractal break + H1 + H4 aligned\n━━━━━━━━━━━━━━━━━━━━\n📅 D1 CANDLE STATUS\n━━━━━━━━━━━━━━━━━━━━\n`;
       if (d1) message += `Direction:  ${d1.direction}\nD1 Open:    ${d1.open.toFixed(4)}\nD1 Current: ${d1.close.toFixed(4)}\nMovement:   ${d1.change.toFixed(4)} pts (${d1.changePct.toFixed(2)}%)\nAlignment:  ${alignment}\n\n`;
       else message += `⚠️ D1 data unavailable\n\n`;
-      message += `⏰ Time (UTC): ${timeFormatted}`;
+      message += `⏰ Time (UTC): ${timeFormatted}\n\n💡 To close manually: send \`/close win\` or \`/close loss\` in this chat`;
       await sendTelegram(message);
       trades.push({ id: `${SYMBOL}-${isoTime}`, contractId: null, repo: REPO_LABEL, symbol: SYMBOL, direction, entry, sl, tp1, tp2, tp3, h1OpenAtEntry: h1Data.open, tp1Reached: false, macdEarlyFlipEpoch: null, lastInProfit: null, rr: RISK_REWARD, openTime: timeFormatted, closeTime: null, result: null });
       fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
