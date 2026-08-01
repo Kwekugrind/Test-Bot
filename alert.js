@@ -18,7 +18,7 @@ const FRACTAL_LOOKBACK = 8;
 const SETUP_EXPIRY_BARS = 15;
 const RISK_REWARD = 1.5;
 const STAKE_USD = 10;
-const MULTIPLIER = 40;
+const MULTIPLIER = 80;
 
 const SAFETY_TP_USD = 30;
 const MARKET_DATA_APP_ID = "1089";
