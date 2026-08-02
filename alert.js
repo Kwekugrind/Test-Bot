@@ -373,6 +373,8 @@ async function runScanMode() {
     const opens = candles.map(c => parseFloat(c.open)), highs = candles.map(c => parseFloat(c.high)), lows = candles.map(c => parseFloat(c.low));
     const smaFast = sma(closes, 4), smaSlow = sma(closes, 34);
     const atr14 = calculateATR(candles, ATR_PERIOD);
+    const bodies = candles.map(c => Math.abs(parseFloat(c.close) - parseFloat(c.open)));
+    const avgBody = sma(bodies, 20)[i] || 0;
     const crossUp = (smaFast[i-1] <= smaSlow[i-1]) && (smaFast[i] > smaSlow[i]);
     const crossDn = (smaFast[i-1] >= smaSlow[i-1]) && (smaFast[i] < smaSlow[i]);
     if (crossUp) { state.waitingFor = "BUY"; state.setupEpoch = currentCandleEpoch; }
@@ -381,6 +383,9 @@ async function runScanMode() {
     const candleRange = highs[i] - lows[i];
     const closePosBuy = (closes[i] - lows[i]) / candleRange, closePosSell = (highs[i] - closes[i]) / candleRange;
     const sma34Slope = smaSlow[i] - smaSlow[i-3];
+    const smaSeparation = Math.abs(smaFast[i] - smaSlow[i]);
+    const separationOk = smaSeparation > (atr14 * 0.3);
+    const impulseOk = bodies[i] > (avgBody * 1.5);
     const fractals = getFractals(candles);
     const fractalBreakUp   = fractals.significantHigh !== null && closes[i] > fractals.significantHigh;
     const fractalBreakDown = fractals.significantLow  !== null && closes[i] < fractals.significantLow;
@@ -390,8 +395,8 @@ async function runScanMode() {
     if (!h4Candle) { console.log("⚠️ H4 unavailable — skipping signal scan"); state.lastProcessedEpoch = currentCandleEpoch; fs.writeFileSync("state.json", JSON.stringify(state, null, 2)); return; }
     const h4Bullish = parseFloat(h4Candle.close) > parseFloat(h4Candle.open);
     const h4Bearish = parseFloat(h4Candle.close) < parseFloat(h4Candle.open);
-    const buySignal  = state.waitingFor === "BUY"  && h4Bullish && fractalBreakUp   && sma34Slope > 0 && closePosBuy  >= 0.7 && closes[i] > opens[i] && (h1Ema50 === null || closes[i] > h1Ema50);
-    const sellSignal = state.waitingFor === "SELL" && h4Bearish && fractalBreakDown && sma34Slope < 0 && closePosSell >= 0.7 && closes[i] < opens[i] && (h1Ema50 === null || closes[i] < h1Ema50);
+    const buySignal  = state.waitingFor === "BUY"  && h4Bullish && fractalBreakUp   && sma34Slope > 0 && separationOk && impulseOk && closePosBuy  >= 0.7 && closes[i] > opens[i] && (h1Ema50 === null || closes[i] > h1Ema50);
+    const sellSignal = state.waitingFor === "SELL" && h4Bearish && fractalBreakDown && sma34Slope < 0 && separationOk && impulseOk && closePosSell >= 0.7 && closes[i] < opens[i] && (h1Ema50 === null || closes[i] < h1Ema50);
     let signalTriggered = false, direction = "", entry, sl, risk, tp1, tp2, tp3;
     if (buySignal) { signalTriggered = true; direction = "BUY"; entry = closes[i]; sl = fractals.significantLow !== null ? Math.min(fractals.significantLow, entry-atr14*1.5) : entry-atr14*1.5; risk = entry-sl; tp1 = entry+risk*RISK_REWARD; tp2 = entry+risk*2; tp3 = entry+risk*3; }
     else if (sellSignal) { signalTriggered = true; direction = "SELL"; entry = closes[i]; sl = fractals.significantHigh !== null ? Math.max(fractals.significantHigh, entry+atr14*1.5) : entry+atr14*1.5; risk = sl-entry; tp1 = entry-risk*RISK_REWARD; tp2 = entry-risk*2; tp3 = entry-risk*3; }
