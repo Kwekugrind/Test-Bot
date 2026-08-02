@@ -328,7 +328,14 @@ async function runScanMode() {
       else {
         if (!inProfit && openTrade.h1OpenAtEntry != null) {
           const h1Breach = (openTrade.direction === "BUY" && closes[i] < openTrade.h1OpenAtEntry) || (openTrade.direction === "SELL" && closes[i] > openTrade.h1OpenAtEntry);
-          if (h1Breach) { settledResult = "LOSS"; exitReason = "H1 Open Break — early loss cut"; }
+          if (h1Breach) {
+            const h4ForExit = await fetchH4Candle();
+            const h4TurnedAgainst = h4ForExit && (
+              (openTrade.direction === "BUY" && parseFloat(h4ForExit.close) < parseFloat(h4ForExit.open)) ||
+              (openTrade.direction === "SELL" && parseFloat(h4ForExit.close) > parseFloat(h4ForExit.open))
+            );
+            if (h4TurnedAgainst) { settledResult = "LOSS"; exitReason = "H1 Open Break + H4 reversal — early loss cut"; }
+          }
         }
         if (!settledResult) {
           if (!openTrade.tp1Reached) {
@@ -375,8 +382,8 @@ async function runScanMode() {
     if (state.waitingFor && state.setupEpoch && (currentCandleEpoch - state.setupEpoch) > (SETUP_EXPIRY_BARS * M5)) { state.waitingFor = null; state.setupEpoch = null; }
     const candleRange = highs[i] - lows[i];
     const closePosBuy = (closes[i] - lows[i]) / candleRange, closePosSell = (highs[i] - closes[i]) / candleRange;
-    const smaSeparation = Math.abs(smaFast[i] - smaSlow[i]), sma34Slope = smaSlow[i] - smaSlow[i-3];
-    const separationOk = smaSeparation > (atr14 * 0.5), impulseOk = bodies[i] > (avgBody * 1.5);
+    const sma34Slope = smaSlow[i] - smaSlow[i-3];
+    const impulseOk = bodies[i] > (avgBody * 1.5);
     const fractals = getFractals(candles);
     const fractalBreakUp   = fractals.significantHigh !== null && closes[i] > fractals.significantHigh;
     const fractalBreakDown = fractals.significantLow  !== null && closes[i] < fractals.significantLow;
@@ -386,8 +393,8 @@ async function runScanMode() {
     if (!h4Candle) { console.log("⚠️ H4 unavailable — skipping signal scan"); state.lastProcessedEpoch = currentCandleEpoch; fs.writeFileSync("state.json", JSON.stringify(state, null, 2)); return; }
     const h4Bullish = parseFloat(h4Candle.close) > parseFloat(h4Candle.open);
     const h4Bearish = parseFloat(h4Candle.close) < parseFloat(h4Candle.open);
-    const buySignal  = state.waitingFor === "BUY"  && h4Bullish && fractalBreakUp   && separationOk && sma34Slope > 0 && impulseOk && closePosBuy  >= 0.7 && closes[i] > opens[i] && (h1Ema50 === null || closes[i] > h1Ema50);
-    const sellSignal = state.waitingFor === "SELL" && h4Bearish && fractalBreakDown && separationOk && sma34Slope < 0 && impulseOk && closePosSell >= 0.7 && closes[i] < opens[i] && (h1Ema50 === null || closes[i] < h1Ema50);
+    const buySignal  = state.waitingFor === "BUY"  && h4Bullish && fractalBreakUp   && sma34Slope > 0 && impulseOk && closePosBuy  >= 0.7 && closes[i] > opens[i] && (h1Ema50 === null || closes[i] > h1Ema50);
+    const sellSignal = state.waitingFor === "SELL" && h4Bearish && fractalBreakDown && sma34Slope < 0 && impulseOk && closePosSell >= 0.7 && closes[i] < opens[i] && (h1Ema50 === null || closes[i] < h1Ema50);
     let signalTriggered = false, direction = "", entry, sl, risk, tp1, tp2, tp3;
     if (buySignal) { signalTriggered = true; direction = "BUY"; entry = closes[i]; sl = fractals.significantLow !== null ? Math.min(fractals.significantLow, entry-atr14*1.5) : entry-atr14*1.5; risk = entry-sl; tp1 = entry+risk*RISK_REWARD; tp2 = entry+risk*2; tp3 = entry+risk*3; }
     else if (sellSignal) { signalTriggered = true; direction = "SELL"; entry = closes[i]; sl = fractals.significantHigh !== null ? Math.max(fractals.significantHigh, entry+atr14*1.5) : entry+atr14*1.5; risk = sl-entry; tp1 = entry-risk*RISK_REWARD; tp2 = entry-risk*2; tp3 = entry-risk*3; }
