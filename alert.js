@@ -21,6 +21,8 @@ const STAKE_USD = 10;
 const MULTIPLIER = 400;
 
 const SAFETY_TP_USD = 15;
+const HIGH_WATER_ACTIVATE_USD = 5;
+const HIGH_WATER_DRAWDOWN_USD = 3;
 const MARKET_DATA_APP_ID = "1089";
 const DERIV_APP_ID = process.env.DERIV_APP_ID;
 
@@ -238,6 +240,13 @@ function sma(data, period) { return data.map((_, i, arr) => { if (i < period - 1
 function ema(data, period) { const k = 2 / (period + 1); let e = [data[0]]; for (let i = 1; i < data.length; i++) e[i] = data[i] * k + e[i-1] * (1-k); return e; }
 function calculateATR(candles, period) { let trs = []; for (let i = 1; i < candles.length; i++) { const h = parseFloat(candles[i].high), l = parseFloat(candles[i].low), pc = parseFloat(candles[i-1].close); trs.push(Math.max(h-l, Math.abs(h-pc), Math.abs(l-pc))); } return trs.slice(-period).reduce((a,b) => a+b, 0) / period; }
 
+function calcUnrealizedPnL(direction, entry, currentPrice) {
+  const pct = direction === "BUY"
+    ? (currentPrice - entry) / entry
+    : (entry - currentPrice) / entry;
+  return pct * STAKE_USD * MULTIPLIER;
+}
+
 // Collect all fractals (high and low) in chronological order, tagged by type.
 // Take the most recent FRACTAL_LOOKBACK fractals from that combined pool.
 // significantHigh = max of any HIGH fractals in those recent N.
@@ -297,6 +306,17 @@ async function runScanMode() {
     let openTrade = trades.find(t => t.result === null);
     if (openTrade) {
       const currentPrice = await getCurrentPrice();
+      const unrealizedPnL = calcUnrealizedPnL(openTrade.direction, openTrade.entry, currentPrice);
+      if (unrealizedPnL >= HIGH_WATER_ACTIVATE_USD) {
+        if (openTrade.peakProfit == null || unrealizedPnL > openTrade.peakProfit) {
+          openTrade.peakProfit = unrealizedPnL;
+          fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
+        }
+        if (unrealizedPnL <= openTrade.peakProfit - HIGH_WATER_DRAWDOWN_USD) {
+          settledResult = "WIN";
+          exitReason = `Profit trail exit — locked ~$${unrealizedPnL.toFixed(2)} (peak $${openTrade.peakProfit.toFixed(2)})`;
+        }
+      }
       const inProfit = (openTrade.direction === "BUY" && currentPrice >= openTrade.entry) || (openTrade.direction === "SELL" && currentPrice <= openTrade.entry);
       if (openTrade.lastInProfit !== null && openTrade.lastInProfit !== inProfit) openTrade.macdEarlyFlipEpoch = null;
       openTrade.lastInProfit = inProfit;
@@ -383,7 +403,7 @@ async function runScanMode() {
       else message += `⚠️ D1 data unavailable\n\n`;
       message += `⏰ Time (UTC): ${timeFormatted}\n\n💡 To close manually: send \`/close win\` or \`/close loss\` in this chat`;
       await sendTelegram(message);
-      trades.push({ id: `${SYMBOL}-${isoTime}`, contractId: null, repo: REPO_LABEL, symbol: SYMBOL, direction, entry, sl, tp1, tp2, tp3, h1OpenAtEntry: h1Data.open, tp1Reached: false, macdEarlyFlipEpoch: null, lastInProfit: null, rr: RISK_REWARD, openTime: timeFormatted, closeTime: null, result: null });
+      trades.push({ id: `${SYMBOL}-${isoTime}`, contractId: null, repo: REPO_LABEL, symbol: SYMBOL, direction, entry, sl, tp1, tp2, tp3, h1OpenAtEntry: h1Data.open, tp1Reached: false, macdEarlyFlipEpoch: null, lastInProfit: null, peakProfit: null, rr: RISK_REWARD, openTime: timeFormatted, closeTime: null, result: null });
       fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
       try { const contractId = await executeTrade(direction); if (contractId) { trades[trades.length-1].contractId = contractId; fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2)); } } catch (execErr) { console.error("⚠️ Live execution warning:", execErr.message); }
       state.waitingFor = null; state.setupEpoch = null;
@@ -392,3 +412,4 @@ async function runScanMode() {
     fs.writeFileSync("state.json", JSON.stringify(state, null, 2));
   } catch (err) { console.error("❌ BOT ERROR:", err.message); process.exit(1); }
 }
+
