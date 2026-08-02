@@ -101,10 +101,7 @@ async function checkTelegramCommands() {
 async function executeManualClose(result, reason) {
   let trades = fs.existsSync("trades.json") ? JSON.parse(fs.readFileSync("trades.json")) : [];
   const openTrade = trades.find(t => t.result === null);
-  if (!openTrade) {
-    await sendTelegram(`⚠️ *${REPO_LABEL}*\n\nNo open trade found to close.`);
-    return;
-  }
+  if (!openTrade) { await sendTelegram(`⚠️ *${REPO_LABEL}*\n\nNo open trade found to close.`); return; }
   console.log(`🔄 Manual ${result} close requested: ${reason}`);
   let currentPrice = null;
   try { currentPrice = await getCurrentPrice(); } catch (e) { console.error("Price fetch error:", e.message); }
@@ -237,7 +234,22 @@ async function closeContract(contractId) {
 function sma(data, period) { return data.map((_, i, arr) => { if (i < period - 1) return null; return arr.slice(i - period + 1, i + 1).reduce((a, b) => a + b, 0) / period; }); }
 function ema(data, period) { const k = 2 / (period + 1); let e = [data[0]]; for (let i = 1; i < data.length; i++) e[i] = data[i] * k + e[i-1] * (1-k); return e; }
 function calculateATR(candles, period) { let trs = []; for (let i = 1; i < candles.length; i++) { const h = parseFloat(candles[i].high), l = parseFloat(candles[i].low), pc = parseFloat(candles[i-1].close); trs.push(Math.max(h-l, Math.abs(h-pc), Math.abs(l-pc))); } return trs.slice(-period).reduce((a,b) => a+b, 0) / period; }
-function getFractals(candles) { let pool = []; for (let i = 2; i < candles.length-2; i++) { const h = parseFloat(candles[i].high); if (h > parseFloat(candles[i-1].high) && h > parseFloat(candles[i-2].high) && h > parseFloat(candles[i+1].high) && h > parseFloat(candles[i+2].high)) pool.push(h); const l = parseFloat(candles[i].low); if (l < parseFloat(candles[i-1].low) && l < parseFloat(candles[i-2].low) && l < parseFloat(candles[i+1].low) && l < parseFloat(candles[i+2].low)) pool.push(l); } const recent = pool.slice(-FRACTAL_LOOKBACK); return { significantHigh: recent.length > 0 ? Math.max(...recent) : null, significantLow: recent.length > 0 ? Math.min(...recent) : null }; }
+
+function getFractals(candles) {
+  const fractalHighs = [], fractalLows = [];
+  for (let i = 2; i < candles.length - 2; i++) {
+    const h = parseFloat(candles[i].high);
+    if (h > parseFloat(candles[i-1].high) && h > parseFloat(candles[i-2].high) && h > parseFloat(candles[i+1].high) && h > parseFloat(candles[i+2].high)) fractalHighs.push(h);
+    const l = parseFloat(candles[i].low);
+    if (l < parseFloat(candles[i-1].low) && l < parseFloat(candles[i-2].low) && l < parseFloat(candles[i+1].low) && l < parseFloat(candles[i+2].low)) fractalLows.push(l);
+  }
+  const recentHighs = fractalHighs.slice(-FRACTAL_LOOKBACK);
+  const recentLows  = fractalLows.slice(-FRACTAL_LOOKBACK);
+  return {
+    significantHigh: recentHighs.length > 0 ? Math.max(...recentHighs) : null,
+    significantLow:  recentLows.length  > 0 ? Math.min(...recentLows)  : null
+  };
+}
 
 async function fetchH1Data() {
   try { const h1 = await fetchCandles(3600, 60); if (!h1 || h1.length < 50) return { ema50: null, open: null }; const closes = h1.map(c => parseFloat(c.close)); const emaArr = ema(closes, 50); return { ema50: emaArr[emaArr.length-1], open: parseFloat(h1[h1.length-1].open) }; } catch { return { ema50: null, open: null }; }
@@ -331,8 +343,8 @@ async function runScanMode() {
     const smaSeparation = Math.abs(smaFast[i] - smaSlow[i]), sma34Slope = smaSlow[i] - smaSlow[i-3];
     const separationOk = smaSeparation > (atr14 * 0.5), impulseOk = bodies[i] > (avgBody * 1.5);
     const fractals = getFractals(candles);
-    const fractalBreakUp = fractals.significantHigh !== null && closes[i] > fractals.significantHigh;
-    const fractalBreakDown = fractals.significantLow !== null && closes[i] < fractals.significantLow;
+    const fractalBreakUp   = fractals.significantHigh !== null && closes[i] > fractals.significantHigh;
+    const fractalBreakDown = fractals.significantLow  !== null && closes[i] < fractals.significantLow;
     const h1Data = await fetchH1Data();
     const h1Ema50 = h1Data.ema50;
     const h4Candle = await fetchH4Candle();
