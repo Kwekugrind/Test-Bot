@@ -101,7 +101,10 @@ async function checkTelegramCommands() {
 async function executeManualClose(result, reason) {
   let trades = fs.existsSync("trades.json") ? JSON.parse(fs.readFileSync("trades.json")) : [];
   const openTrade = trades.find(t => t.result === null);
-  if (!openTrade) { await sendTelegram(`⚠️ *${REPO_LABEL}*\n\nNo open trade found to close.`); return; }
+  if (!openTrade) {
+    await sendTelegram(`⚠️ *${REPO_LABEL}*\n\nNo open trade found to close.`);
+    return;
+  }
   console.log(`🔄 Manual ${result} close requested: ${reason}`);
   let currentPrice = null;
   try { currentPrice = await getCurrentPrice(); } catch (e) { console.error("Price fetch error:", e.message); }
@@ -235,19 +238,31 @@ function sma(data, period) { return data.map((_, i, arr) => { if (i < period - 1
 function ema(data, period) { const k = 2 / (period + 1); let e = [data[0]]; for (let i = 1; i < data.length; i++) e[i] = data[i] * k + e[i-1] * (1-k); return e; }
 function calculateATR(candles, period) { let trs = []; for (let i = 1; i < candles.length; i++) { const h = parseFloat(candles[i].high), l = parseFloat(candles[i].low), pc = parseFloat(candles[i-1].close); trs.push(Math.max(h-l, Math.abs(h-pc), Math.abs(l-pc))); } return trs.slice(-period).reduce((a,b) => a+b, 0) / period; }
 
+// Collect all fractals (high and low) in chronological order, tagged by type.
+// Take the most recent FRACTAL_LOOKBACK fractals from that combined pool.
+// significantHigh = max of any HIGH fractals in those recent N.
+// significantLow  = min of any LOW  fractals in those recent N.
+// This prevents a run of all-low fractals from producing a fake significantHigh.
 function getFractals(candles) {
-  const fractalHighs = [], fractalLows = [];
+  const pool = [];
   for (let i = 2; i < candles.length - 2; i++) {
     const h = parseFloat(candles[i].high);
-    if (h > parseFloat(candles[i-1].high) && h > parseFloat(candles[i-2].high) && h > parseFloat(candles[i+1].high) && h > parseFloat(candles[i+2].high)) fractalHighs.push(h);
+    if (h > parseFloat(candles[i-1].high) && h > parseFloat(candles[i-2].high) &&
+        h > parseFloat(candles[i+1].high) && h > parseFloat(candles[i+2].high)) {
+      pool.push({ type: "high", value: h });
+    }
     const l = parseFloat(candles[i].low);
-    if (l < parseFloat(candles[i-1].low) && l < parseFloat(candles[i-2].low) && l < parseFloat(candles[i+1].low) && l < parseFloat(candles[i+2].low)) fractalLows.push(l);
+    if (l < parseFloat(candles[i-1].low) && l < parseFloat(candles[i-2].low) &&
+        l < parseFloat(candles[i+1].low) && l < parseFloat(candles[i+2].low)) {
+      pool.push({ type: "low", value: l });
+    }
   }
-  const recentHighs = fractalHighs.slice(-FRACTAL_LOOKBACK);
-  const recentLows  = fractalLows.slice(-FRACTAL_LOOKBACK);
+  const recent = pool.slice(-FRACTAL_LOOKBACK);
+  const highs = recent.filter(f => f.type === "high").map(f => f.value);
+  const lows  = recent.filter(f => f.type === "low").map(f => f.value);
   return {
-    significantHigh: recentHighs.length > 0 ? Math.max(...recentHighs) : null,
-    significantLow:  recentLows.length  > 0 ? Math.min(...recentLows)  : null
+    significantHigh: highs.length > 0 ? Math.max(...highs) : null,
+    significantLow:  lows.length  > 0 ? Math.min(...lows)  : null,
   };
 }
 
