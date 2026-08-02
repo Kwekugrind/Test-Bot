@@ -72,7 +72,7 @@ async function runSummary(daysBack, title) {
   const netR = periodTrades.reduce((s, t) => s + (t.result === "WIN" ? t.rr : -1), 0);
   const winRate = ((wins / periodTrades.length) * 100).toFixed(1);
   const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
-  const netDollars = parseFloat((netR * slDollars).toFixed(2));
+  const netDollars = parseFloat(periodTrades.reduce((s, t) => s + (t.pnlUSD != null ? t.pnlUSD : (t.result === "WIN" ? t.rr * slDollars : -slDollars)), 0).toFixed(2));
   await sendTelegram(`📊 *${REPO_LABEL} — ${title}*\n\nTrades:    ${periodTrades.length}\nWins:      ${wins}  |  Losses: ${losses}\nWin Rate:  ${winRate}%\nNet R:     ${netR.toFixed(1)}R\nNet P&L:   $${netDollars >= 0 ? "+" : ""}${netDollars}`);
 }
 
@@ -307,7 +307,11 @@ async function runScanMode() {
     if (openTrade) {
       const currentPrice = await getCurrentPrice();
       const unrealizedPnL = calcUnrealizedPnL(openTrade.direction, openTrade.entry, currentPrice);
-      if (unrealizedPnL >= HIGH_WATER_ACTIVATE_USD) {
+      let settledResult = null, exitReason = "", derivAlreadyClosed = false;
+      if (unrealizedPnL >= SAFETY_TP_USD) {
+        settledResult = "WIN"; exitReason = `Safety TP hit — $${SAFETY_TP_USD} ceiling reached`; derivAlreadyClosed = true;
+      }
+      if (!settledResult && unrealizedPnL >= HIGH_WATER_ACTIVATE_USD) {
         if (openTrade.peakProfit == null || unrealizedPnL > openTrade.peakProfit) {
           openTrade.peakProfit = unrealizedPnL;
           fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
@@ -323,7 +327,7 @@ async function runScanMode() {
       const activeMACD = inProfit ? macdSlow : macdFast;
       const macdFlipped = (openTrade.direction === "BUY" && activeMACD < 0) || (openTrade.direction === "SELL" && activeMACD > 0);
       const slHit = (openTrade.direction === "BUY" && currentPrice <= openTrade.sl) || (openTrade.direction === "SELL" && currentPrice >= openTrade.sl);
-      let settledResult = null, exitReason = "", derivAlreadyClosed = false;
+      if (!settledResult) {
       if (slHit) { settledResult = "LOSS"; exitReason = "Stop Loss Hit (Deriv hard SL)"; derivAlreadyClosed = true; }
       else {
         if (!inProfit && openTrade.h1OpenAtEntry != null) {
@@ -351,6 +355,7 @@ async function runScanMode() {
           } else { if (openTrade.macdEarlyFlipEpoch) { openTrade.macdEarlyFlipEpoch = null; fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2)); } }
         }
       }
+      } // end !settledResult
       if (settledResult) {
         if (!derivAlreadyClosed) await closeContract(openTrade.contractId);
         openTrade.result = settledResult; openTrade.closeTime = new Date().toISOString();
@@ -364,6 +369,7 @@ async function runScanMode() {
         const isHardSL = exitReason.includes("Stop Loss Hit");
         const pnlDollars = isHardSL ? -slDollars : parseFloat(calcUnrealizedPnL(openTrade.direction, openTrade.entry, currentPrice).toFixed(2));
         const pnlStr = pnlDollars >= 0 ? `+$${pnlDollars.toFixed(2)}` : `-$${Math.abs(pnlDollars).toFixed(2)}`;
+        openTrade.pnlUSD = pnlDollars; fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
         await sendTelegram(`${icon} *${REPO_LABEL} — Trade ${settledResult}*\n\nDirection: ${openTrade.direction} (${contractType})\nSymbol:    ${SYMBOL_NAME}\n\n📍 Entry:  ${openTrade.entry.toFixed(4)}\n🏁 Exit:   ${currentPrice.toFixed(4)}\n🛑 SL:     ${openTrade.sl.toFixed(4)}  ($${slDollars} hard)\n🎯 TP1:    ${openTrade.tp1.toFixed(4)}  ($${tpDollars} soft)  ${tp1Status}\n\n💵 P&L:    ${pnlStr}\nReason:    ${exitReason}\nDuration:  ${formatDuration(durationMins)}\n\nOpened:  ${openTrade.openTime.substring(0,16).replace("T"," ")} UTC\nClosed:  ${openTrade.closeTime.substring(0,16).replace("T"," ")} UTC\n` + (openTrade.contractId ? `Contract: \`${openTrade.contractId}\`` : ""));
       }
       return;
