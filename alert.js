@@ -377,7 +377,7 @@ async function runScanMode() {
     const smaSlow5 = sma(closes, 50);
     const smaFast5 = sma(closes, 2);
     const atr14 = calculateATR(candles, ATR_PERIOD);
-    // Step 1: H1 SMA(2)/SMA(50) cross — sets macro direction
+    // Step 1: H1 SMA(2)/SMA(50) cross — sets macro direction; any cross clears M15 and setup state
     const h1CrossCandles = await fetchCandles(H1, 100);
     if (h1CrossCandles && h1CrossCandles.length >= 52) {
       const h1Closes = h1CrossCandles.map(c => parseFloat(c.close));
@@ -392,7 +392,7 @@ async function runScanMode() {
         }
       }
     }
-    // Step 2: M15 SMA(2)/SMA(50) cross — confirms intermediate trend, must match H1
+    // Step 2: M15 SMA(2)/SMA(50) cross — confirms intermediate trend, must match H1; counter-cross resets the setup
     if (state.h1CrossDir) {
       const m15CrossCandles = await fetchCandles(M15, 100);
       if (m15CrossCandles && m15CrossCandles.length >= 52) {
@@ -405,6 +405,10 @@ async function runScanMode() {
             state.m15CrossDir = "BUY"; state.m15CrossEpoch = m15Epoch; state.waitingFor = null; state.setupEpoch = null;
           } else if (state.h1CrossDir === "SELL" && (smaFast15[m15ci-1] >= smaSlow15[m15ci-1]) && (smaFast15[m15ci] < smaSlow15[m15ci])) {
             state.m15CrossDir = "SELL"; state.m15CrossEpoch = m15Epoch; state.waitingFor = null; state.setupEpoch = null;
+          } else if (state.h1CrossDir === "BUY" && (smaFast15[m15ci-1] >= smaSlow15[m15ci-1]) && (smaFast15[m15ci] < smaSlow15[m15ci])) {
+            state.m15CrossDir = null; state.m15CrossEpoch = null; state.waitingFor = null; state.setupEpoch = null;
+          } else if (state.h1CrossDir === "SELL" && (smaFast15[m15ci-1] <= smaSlow15[m15ci-1]) && (smaFast15[m15ci] > smaSlow15[m15ci])) {
+            state.m15CrossDir = null; state.m15CrossEpoch = null; state.waitingFor = null; state.setupEpoch = null;
           }
         }
       }
