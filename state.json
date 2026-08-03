@@ -1,6 +1,7 @@
 {
   "waitingFor": null,
   "setupEpoch": null,
-  "lastProcessedEpoch": 1785766200,
-  "lastTgUpdateId": 0
+  "lastProcessedEpoch": 1785767400,
+  "lastTgUpdateId": 0,
+  "lastM15SetupEpoch": null
 }
