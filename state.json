@@ -1,7 +1,11 @@
 {
   "waitingFor": null,
   "setupEpoch": null,
-  "lastProcessedEpoch": 1785767700,
+  "lastProcessedEpoch": 1785768000,
   "lastTgUpdateId": 0,
+  "h1CrossDir": null,
+  "h1CrossEpoch": null,
+  "m15CrossDir": null,
+  "m15CrossEpoch": null,
   "lastM15SetupEpoch": null
 }
