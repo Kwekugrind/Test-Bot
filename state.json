@@ -1,6 +1,6 @@
 {
-  "waitingFor": "SELL",
-  "setupEpoch": 1785726600,
-  "lastProcessedEpoch": 1785730200,
+  "waitingFor": null,
+  "setupEpoch": null,
+  "lastProcessedEpoch": 1785730500,
   "lastTgUpdateId": 0
 }
