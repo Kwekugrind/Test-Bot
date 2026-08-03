@@ -10,6 +10,7 @@ const REPO_LABEL = "Test Bot (V10 Live)";
 // ==================================================================
 
 const M5 = 300;
+const M15 = 900;
 const H1 = 3600;
 const D1 = 86400;
 const CANDLES = 200;
@@ -77,7 +78,7 @@ async function runSummary(daysBack, title) {
   await sendTelegram(`📊 *${REPO_LABEL} — ${title}*\n\nTrades:    ${periodTrades.length}\nWins:      ${wins}  |  Losses: ${losses}\nWin Rate:  ${winRate}%\nNet R:     ${netR.toFixed(1)}R\nNet P&L:   $${netDollars >= 0 ? "+" : ""}${netDollars}`);
 }
 
-let state = { waitingFor: null, setupEpoch: null, lastProcessedEpoch: null, lastTgUpdateId: 0, lastM15SetupEpoch: null };
+let state = { waitingFor: null, setupEpoch: null, lastProcessedEpoch: null, lastTgUpdateId: 0, h1CrossDir: null, h1CrossEpoch: null, m15CrossDir: null, m15CrossEpoch: null };
 try { if (fs.existsSync("state.json")) state = { ...state, ...JSON.parse(fs.readFileSync("state.json")) }; } catch (e) { console.log("State load error, starting fresh."); }
 
 async function checkTelegramCommands() {
@@ -379,21 +380,45 @@ async function runScanMode() {
     const isoTime = new Date(currentCandleEpoch * 1000).toISOString();
     const opens = candles.map(c => parseFloat(c.open)), highs = candles.map(c => parseFloat(c.high)), lows = candles.map(c => parseFloat(c.low));
     const smaSlow5 = sma(closes, 34);
+    const smaFast5 = sma(closes, 4);
     const atr14 = calculateATR(candles, ATR_PERIOD);
+    // Step 1: H1 SMA(2)/SMA(50) cross — sets macro direction
     const h1CrossCandles = await fetchCandles(H1, 100);
-    let crossUp = false, crossDn = false;
     if (h1CrossCandles && h1CrossCandles.length >= 52) {
       const h1Closes = h1CrossCandles.map(c => parseFloat(c.close));
       const h1ci = h1CrossCandles.length - 2;
       const smaFast1h = sma(h1Closes, 2), smaSlow1h = sma(h1Closes, 50);
-      const h1SetupEpoch = h1CrossCandles[h1ci].epoch;
-      if (smaFast1h[h1ci] != null && smaSlow1h[h1ci] != null && state.lastM15SetupEpoch !== h1SetupEpoch) {
-        if ((smaFast1h[h1ci-1] <= smaSlow1h[h1ci-1]) && (smaFast1h[h1ci] > smaSlow1h[h1ci])) crossUp = true;
-        else if ((smaFast1h[h1ci-1] >= smaSlow1h[h1ci-1]) && (smaFast1h[h1ci] < smaSlow1h[h1ci])) crossDn = true;
+      const h1Epoch = h1CrossCandles[h1ci].epoch;
+      if (smaFast1h[h1ci] != null && smaSlow1h[h1ci] != null && state.h1CrossEpoch !== h1Epoch) {
+        if ((smaFast1h[h1ci-1] <= smaSlow1h[h1ci-1]) && (smaFast1h[h1ci] > smaSlow1h[h1ci])) {
+          state.h1CrossDir = "BUY"; state.h1CrossEpoch = h1Epoch; state.m15CrossDir = null; state.m15CrossEpoch = null; state.waitingFor = null; state.setupEpoch = null;
+        } else if ((smaFast1h[h1ci-1] >= smaSlow1h[h1ci-1]) && (smaFast1h[h1ci] < smaSlow1h[h1ci])) {
+          state.h1CrossDir = "SELL"; state.h1CrossEpoch = h1Epoch; state.m15CrossDir = null; state.m15CrossEpoch = null; state.waitingFor = null; state.setupEpoch = null;
+        }
       }
     }
-    if (crossUp) { state.waitingFor = "BUY"; state.setupEpoch = currentCandleEpoch; state.lastM15SetupEpoch = h1CrossCandles[h1CrossCandles.length-2].epoch; }
-    else if (crossDn) { state.waitingFor = "SELL"; state.setupEpoch = currentCandleEpoch; state.lastM15SetupEpoch = h1CrossCandles[h1CrossCandles.length-2].epoch; }
+    // Step 2: M15 SMA(2)/SMA(50) cross — confirms intermediate trend, must match H1
+    if (state.h1CrossDir) {
+      const m15CrossCandles = await fetchCandles(M15, 100);
+      if (m15CrossCandles && m15CrossCandles.length >= 52) {
+        const m15Closes = m15CrossCandles.map(c => parseFloat(c.close));
+        const m15ci = m15CrossCandles.length - 2;
+        const smaFast15 = sma(m15Closes, 2), smaSlow15 = sma(m15Closes, 50);
+        const m15Epoch = m15CrossCandles[m15ci].epoch;
+        if (smaFast15[m15ci] != null && smaSlow15[m15ci] != null && state.m15CrossEpoch !== m15Epoch) {
+          if (state.h1CrossDir === "BUY" && (smaFast15[m15ci-1] <= smaSlow15[m15ci-1]) && (smaFast15[m15ci] > smaSlow15[m15ci])) {
+            state.m15CrossDir = "BUY"; state.m15CrossEpoch = m15Epoch; state.waitingFor = null; state.setupEpoch = null;
+          } else if (state.h1CrossDir === "SELL" && (smaFast15[m15ci-1] >= smaSlow15[m15ci-1]) && (smaFast15[m15ci] < smaSlow15[m15ci])) {
+            state.m15CrossDir = "SELL"; state.m15CrossEpoch = m15Epoch; state.waitingFor = null; state.setupEpoch = null;
+          }
+        }
+      }
+    }
+    // Step 3: M5 SMA(4)/SMA(34) cross — arms waitingFor only when H1 and M15 both agree
+    if (state.h1CrossDir && state.m15CrossDir && state.h1CrossDir === state.m15CrossDir) {
+      if ((smaFast5[i-1] <= smaSlow5[i-1]) && (smaFast5[i] > smaSlow5[i]) && state.m15CrossDir === "BUY") { state.waitingFor = "BUY"; state.setupEpoch = currentCandleEpoch; }
+      else if ((smaFast5[i-1] >= smaSlow5[i-1]) && (smaFast5[i] < smaSlow5[i]) && state.m15CrossDir === "SELL") { state.waitingFor = "SELL"; state.setupEpoch = currentCandleEpoch; }
+    }
     if (state.waitingFor && state.setupEpoch && (currentCandleEpoch - state.setupEpoch) > (SETUP_EXPIRY_BARS * M5)) { state.waitingFor = null; state.setupEpoch = null; }
     const candleRange = highs[i] - lows[i];
     const closePosBuy = (closes[i] - lows[i]) / candleRange, closePosSell = (highs[i] - closes[i]) / candleRange;
