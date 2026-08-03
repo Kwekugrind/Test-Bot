@@ -10,6 +10,7 @@ const REPO_LABEL = "Test Bot (V10 Live)";
 // ==================================================================
 
 const M5 = 300;
+const M15 = 900;
 const D1 = 86400;
 const CANDLES = 200;
 
@@ -76,7 +77,7 @@ async function runSummary(daysBack, title) {
   await sendTelegram(`📊 *${REPO_LABEL} — ${title}*\n\nTrades:    ${periodTrades.length}\nWins:      ${wins}  |  Losses: ${losses}\nWin Rate:  ${winRate}%\nNet R:     ${netR.toFixed(1)}R\nNet P&L:   $${netDollars >= 0 ? "+" : ""}${netDollars}`);
 }
 
-let state = { waitingFor: null, setupEpoch: null, lastProcessedEpoch: null, lastTgUpdateId: 0 };
+let state = { waitingFor: null, setupEpoch: null, lastProcessedEpoch: null, lastTgUpdateId: 0, lastM15SetupEpoch: null };
 try { if (fs.existsSync("state.json")) state = { ...state, ...JSON.parse(fs.readFileSync("state.json")) }; } catch (e) { console.log("State load error, starting fresh."); }
 
 async function checkTelegramCommands() {
@@ -377,16 +378,26 @@ async function runScanMode() {
     if (state.lastProcessedEpoch === currentCandleEpoch) return;
     const isoTime = new Date(currentCandleEpoch * 1000).toISOString();
     const opens = candles.map(c => parseFloat(c.open)), highs = candles.map(c => parseFloat(c.high)), lows = candles.map(c => parseFloat(c.low));
-    const smaFast = sma(closes, 4), smaSlow = sma(closes, 34);
+    const smaSlow5 = sma(closes, 34);
     const atr14 = calculateATR(candles, ATR_PERIOD);
-    const crossUp = (smaFast[i-1] <= smaSlow[i-1]) && (smaFast[i] > smaSlow[i]);
-    const crossDn = (smaFast[i-1] >= smaSlow[i-1]) && (smaFast[i] < smaSlow[i]);
-    if (crossUp) { state.waitingFor = "BUY"; state.setupEpoch = currentCandleEpoch; }
-    else if (crossDn) { state.waitingFor = "SELL"; state.setupEpoch = currentCandleEpoch; }
+    const m15Candles = await fetchCandles(M15, 100);
+    let crossUp = false, crossDn = false;
+    if (m15Candles && m15Candles.length >= 35) {
+      const m15Closes = m15Candles.map(c => parseFloat(c.close));
+      const m15i = m15Candles.length - 2;
+      const smaFast15 = sma(m15Closes, 4), smaSlow15 = sma(m15Closes, 34);
+      const m15SetupEpoch = m15Candles[m15i].epoch;
+      if (smaFast15[m15i] != null && smaSlow15[m15i] != null && state.lastM15SetupEpoch !== m15SetupEpoch) {
+        if ((smaFast15[m15i-1] <= smaSlow15[m15i-1]) && (smaFast15[m15i] > smaSlow15[m15i])) crossUp = true;
+        else if ((smaFast15[m15i-1] >= smaSlow15[m15i-1]) && (smaFast15[m15i] < smaSlow15[m15i])) crossDn = true;
+      }
+    }
+    if (crossUp) { state.waitingFor = "BUY"; state.setupEpoch = currentCandleEpoch; state.lastM15SetupEpoch = m15Candles[m15Candles.length-2].epoch; }
+    else if (crossDn) { state.waitingFor = "SELL"; state.setupEpoch = currentCandleEpoch; state.lastM15SetupEpoch = m15Candles[m15Candles.length-2].epoch; }
     if (state.waitingFor && state.setupEpoch && (currentCandleEpoch - state.setupEpoch) > (SETUP_EXPIRY_BARS * M5)) { state.waitingFor = null; state.setupEpoch = null; }
     const candleRange = highs[i] - lows[i];
     const closePosBuy = (closes[i] - lows[i]) / candleRange, closePosSell = (highs[i] - closes[i]) / candleRange;
-    const sma34Slope = smaSlow[i] - smaSlow[i-3];
+    const sma34Slope = smaSlow5[i] - smaSlow5[i-3];
     const fractals = getFractals(candles);
     const fractalBreakUp   = fractals.significantHigh !== null && closes[i] > fractals.significantHigh;
     const fractalBreakDown = fractals.significantLow  !== null && closes[i] < fractals.significantLow;
