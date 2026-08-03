@@ -426,13 +426,12 @@ async function runScanMode() {
     const fractalBreakUp   = fractals.significantHigh !== null && closes[i] > fractals.significantHigh;
     const fractalBreakDown = fractals.significantLow  !== null && closes[i] < fractals.significantLow;
     const h1Data = await fetchH1Data();
-    const h1Ema50 = h1Data.ema50;
     const h4Candle = await fetchH4Candle();
     if (!h4Candle) { console.log("⚠️ H4 unavailable — skipping signal scan"); state.lastProcessedEpoch = currentCandleEpoch; fs.writeFileSync("state.json", JSON.stringify(state, null, 2)); return; }
     const h4Bullish = parseFloat(h4Candle.close) > parseFloat(h4Candle.open);
     const h4Bearish = parseFloat(h4Candle.close) < parseFloat(h4Candle.open);
-    const buySignal  = state.waitingFor === "BUY"  && h4Bullish && fractalBreakUp   && closePosBuy  >= 0.6 && closes[i] > opens[i] && (h1Ema50 === null || closes[i] > h1Ema50);
-    const sellSignal = state.waitingFor === "SELL" && h4Bearish && fractalBreakDown && closePosSell >= 0.6 && closes[i] < opens[i] && (h1Ema50 === null || closes[i] < h1Ema50);
+    const buySignal  = state.waitingFor === "BUY"  && h4Bullish && fractalBreakUp   && closePosBuy  >= 0.6 && closes[i] > opens[i];
+    const sellSignal = state.waitingFor === "SELL" && h4Bearish && fractalBreakDown && closePosSell >= 0.6 && closes[i] < opens[i];
     let signalTriggered = false, direction = "", entry, sl, risk, tp1, tp2, tp3;
     if (buySignal) { signalTriggered = true; direction = "BUY"; entry = closes[i]; sl = fractals.significantLow !== null ? Math.min(fractals.significantLow, entry-atr14*1.5) : entry-atr14*1.5; risk = entry-sl; tp1 = entry+risk*RISK_REWARD; tp2 = entry+risk*2; tp3 = entry+risk*3; }
     else if (sellSignal) { signalTriggered = true; direction = "SELL"; entry = closes[i]; sl = fractals.significantHigh !== null ? Math.max(fractals.significantHigh, entry+atr14*1.5) : entry+atr14*1.5; risk = sl-entry; tp1 = entry-risk*RISK_REWARD; tp2 = entry-risk*2; tp3 = entry-risk*3; }
@@ -441,9 +440,8 @@ async function runScanMode() {
       const d1 = await getD1Context();
       const alignment = d1 ? checkAlignment(direction, d1.direction) : "⚠️ D1 data unavailable";
       const timeFormatted = new Date(currentCandleEpoch * 1000).toISOString().replace("T"," ").substring(0,19);
-      const h1Line = h1Ema50 ? `H1 EMA50:  ${h1Ema50.toFixed(4)}  ✅ Trend aligned\n` : `H1 EMA50:  ⚠️ Data unavailable\n`;
       const h4Dir = h4Bullish ? "🟢 BULLISH" : "🔴 BEARISH";
-      let message = `🚨 ${SYMBOL_NAME.toUpperCase()} CONFIRMED SIGNAL 🚨\n\nDirection: ${direction}\nRepo: ${REPO_LABEL}\nTimeframe: M5\n\n📍 Entry:  ${entry.toFixed(4)}\n🛑 SL:     ${sl.toFixed(4)}\n🎯 TP1:    ${tp1.toFixed(4)}  → trail with MACD(8,100) after this\n🎯 TP2:    ${tp2.toFixed(4)}  (reference)\n🎯 TP3:    ${tp3.toFixed(4)}  (reference)\n\n💰 Stake: $${STAKE_USD} | Hard SL: $${slDollars} | Soft TP1: $${tpDollars} | Safety: $${SAFETY_TP_USD}\n📊 Risk:   ${risk.toFixed(2)} points\n${h1Line}📈 H4:     ${h4Dir} ✅ Direction confirmed\n🔥 Setup:  Fractal break + H1 + H4 aligned\n━━━━━━━━━━━━━━━━━━━━\n📅 D1 CANDLE STATUS\n━━━━━━━━━━━━━━━━━━━━\n`;
+      let message = `🚨 ${SYMBOL_NAME.toUpperCase()} CONFIRMED SIGNAL 🚨\n\nDirection: ${direction}\nRepo: ${REPO_LABEL}\nTimeframe: M5\n\n📍 Entry:  ${entry.toFixed(4)}\n🛑 SL:     ${sl.toFixed(4)}\n🎯 TP1:    ${tp1.toFixed(4)}  → trail with MACD(8,100) after this\n🎯 TP2:    ${tp2.toFixed(4)}  (reference)\n🎯 TP3:    ${tp3.toFixed(4)}  (reference)\n\n💰 Stake: $${STAKE_USD} | Hard SL: $${slDollars} | Soft TP1: $${tpDollars} | Safety: $${SAFETY_TP_USD}\n📊 Risk:   ${risk.toFixed(2)} points\n📈 H4:     ${h4Dir} ✅ Direction confirmed\n🔥 Setup:  Fractal break + H1 + H4 aligned\n━━━━━━━━━━━━━━━━━━━━\n📅 D1 CANDLE STATUS\n━━━━━━━━━━━━━━━━━━━━\n`;
       if (d1) message += `Direction:  ${d1.direction}\nD1 Open:    ${d1.open.toFixed(4)}\nD1 Current: ${d1.close.toFixed(4)}\nMovement:   ${d1.change.toFixed(4)} pts (${d1.changePct.toFixed(2)}%)\nAlignment:  ${alignment}\n\n`;
       else message += `⚠️ D1 data unavailable\n\n`;
       message += `⏰ Time (UTC): ${timeFormatted}\n\n💡 To close manually: send \`/close win\` or \`/close loss\` in this chat`;
@@ -457,4 +455,3 @@ async function runScanMode() {
     fs.writeFileSync("state.json", JSON.stringify(state, null, 2));
   } catch (err) { console.error("❌ BOT ERROR:", err.message); process.exit(1); }
 }
-
