@@ -57,7 +57,8 @@
     "peakProfit": null,
     "rr": 1.5,
     "openTime": "2026-08-03 04:15:00",
-    "closeTime": null,
-    "result": null
+    "closeTime": "2026-08-03T05:35:17.203Z",
+    "result": "LOSS",
+    "pnlUSD": -5.96
   }
 ]
