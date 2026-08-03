@@ -10,7 +10,7 @@ const REPO_LABEL = "Test Bot (V10 Live)";
 // ==================================================================
 
 const M5 = 300;
-const M15 = 900;
+const H1 = 3600;
 const D1 = 86400;
 const CANDLES = 200;
 
@@ -380,20 +380,20 @@ async function runScanMode() {
     const opens = candles.map(c => parseFloat(c.open)), highs = candles.map(c => parseFloat(c.high)), lows = candles.map(c => parseFloat(c.low));
     const smaSlow5 = sma(closes, 34);
     const atr14 = calculateATR(candles, ATR_PERIOD);
-    const m15Candles = await fetchCandles(M15, 100);
+    const h1CrossCandles = await fetchCandles(H1, 100);
     let crossUp = false, crossDn = false;
-    if (m15Candles && m15Candles.length >= 35) {
-      const m15Closes = m15Candles.map(c => parseFloat(c.close));
-      const m15i = m15Candles.length - 2;
-      const smaFast15 = sma(m15Closes, 2), smaSlow15 = sma(m15Closes, 50);
-      const m15SetupEpoch = m15Candles[m15i].epoch;
-      if (smaFast15[m15i] != null && smaSlow15[m15i] != null && state.lastM15SetupEpoch !== m15SetupEpoch) {
-        if ((smaFast15[m15i-1] <= smaSlow15[m15i-1]) && (smaFast15[m15i] > smaSlow15[m15i])) crossUp = true;
-        else if ((smaFast15[m15i-1] >= smaSlow15[m15i-1]) && (smaFast15[m15i] < smaSlow15[m15i])) crossDn = true;
+    if (h1CrossCandles && h1CrossCandles.length >= 52) {
+      const h1Closes = h1CrossCandles.map(c => parseFloat(c.close));
+      const h1ci = h1CrossCandles.length - 2;
+      const smaFast1h = sma(h1Closes, 2), smaSlow1h = sma(h1Closes, 50);
+      const h1SetupEpoch = h1CrossCandles[h1ci].epoch;
+      if (smaFast1h[h1ci] != null && smaSlow1h[h1ci] != null && state.lastM15SetupEpoch !== h1SetupEpoch) {
+        if ((smaFast1h[h1ci-1] <= smaSlow1h[h1ci-1]) && (smaFast1h[h1ci] > smaSlow1h[h1ci])) crossUp = true;
+        else if ((smaFast1h[h1ci-1] >= smaSlow1h[h1ci-1]) && (smaFast1h[h1ci] < smaSlow1h[h1ci])) crossDn = true;
       }
     }
-    if (crossUp) { state.waitingFor = "BUY"; state.setupEpoch = currentCandleEpoch; state.lastM15SetupEpoch = m15Candles[m15Candles.length-2].epoch; }
-    else if (crossDn) { state.waitingFor = "SELL"; state.setupEpoch = currentCandleEpoch; state.lastM15SetupEpoch = m15Candles[m15Candles.length-2].epoch; }
+    if (crossUp) { state.waitingFor = "BUY"; state.setupEpoch = currentCandleEpoch; state.lastM15SetupEpoch = h1CrossCandles[h1CrossCandles.length-2].epoch; }
+    else if (crossDn) { state.waitingFor = "SELL"; state.setupEpoch = currentCandleEpoch; state.lastM15SetupEpoch = h1CrossCandles[h1CrossCandles.length-2].epoch; }
     if (state.waitingFor && state.setupEpoch && (currentCandleEpoch - state.setupEpoch) > (SETUP_EXPIRY_BARS * M5)) { state.waitingFor = null; state.setupEpoch = null; }
     const candleRange = highs[i] - lows[i];
     const closePosBuy = (closes[i] - lows[i]) / candleRange, closePosSell = (highs[i] - closes[i]) / candleRange;
