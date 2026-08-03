@@ -385,7 +385,7 @@ async function runScanMode() {
     if (m15Candles && m15Candles.length >= 35) {
       const m15Closes = m15Candles.map(c => parseFloat(c.close));
       const m15i = m15Candles.length - 2;
-      const smaFast15 = sma(m15Closes, 4), smaSlow15 = sma(m15Closes, 34);
+      const smaFast15 = sma(m15Closes, 2), smaSlow15 = sma(m15Closes, 50);
       const m15SetupEpoch = m15Candles[m15i].epoch;
       if (smaFast15[m15i] != null && smaSlow15[m15i] != null && state.lastM15SetupEpoch !== m15SetupEpoch) {
         if ((smaFast15[m15i-1] <= smaSlow15[m15i-1]) && (smaFast15[m15i] > smaSlow15[m15i])) crossUp = true;
