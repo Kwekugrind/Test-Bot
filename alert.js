@@ -2,22 +2,24 @@ import WebSocket from "ws";
 import fetch from "node-fetch";
 import fs from "fs";
 
-const SYMBOL          = "R_10";
-const TRADING_SYMBOL  = "R_10";
-const SYMBOL_NAME     = "Volatility 10 Index";
-const REPO_LABEL      = "Test Bot (V10 Live)";
-const MULTIPLIER      = 400;
-const STAKE_USD       = 1;
-const RISK_REWARD     = 1.5;
-const SAFETY_TP_USD   = 0.5;
-const ATR_PERIOD      = 14;
-const SETUP_EXPIRY_BARS = 35;
-const APP_ID          = process.env.DERIV_APP_ID   || "67418";
-const TG_TOKEN        = process.env.TG_TOKEN;
-const TG_CHAT_ID      = process.env.TG_CHAT_ID;
-const DERIV_TOKEN     = process.env.DERIV_API_TOKEN;
-const MODE            = process.env.MODE            || "cronjob";
-const TRIGGER_SOURCE  = process.env.TRIGGER_SOURCE  || "manual";
+const SYMBOL             = "R_10";
+const TRADING_SYMBOL     = "R_10";
+const SYMBOL_NAME        = "Volatility 10 Index";
+const REPO_LABEL         = "Test Bot (V10 Live)";
+const MULTIPLIER         = 400;
+const STAKE_USD          = 1;
+const RISK_REWARD        = 1.5;
+const SAFETY_TP_USD      = 0.5;   // hard dollar ceiling — close immediately
+const TRAIL_ACTIVATE_USD = 0.30;  // start high-water-mark trailing at this profit
+const TRAIL_DROP_USD     = 0.15;  // exit if profit drops this much from peak
+const ATR_PERIOD         = 14;
+const SETUP_EXPIRY_BARS  = 35;
+const APP_ID         = process.env.DERIV_APP_ID   || "67418";
+const TG_TOKEN       = process.env.TG_TOKEN;
+const TG_CHAT_ID     = process.env.TG_CHAT_ID;
+const DERIV_TOKEN    = process.env.DERIV_API_TOKEN;
+const MODE           = process.env.MODE           || "cronjob";
+const TRIGGER_SOURCE = process.env.TRIGGER_SOURCE || "manual";
 const M5  = 5  * 60;
 const M15 = 15 * 60;
 const H1  = 60 * 60;
@@ -80,12 +82,9 @@ async function executeManualClose(result, reason) {
   if (!open.length) { await sendTelegram("No open trades to close."); return; }
   for (const trade of open) {
     const currentPrice = await getCurrentPrice(trade.symbol);
-    if (trade.contractId) {
-      try { await closeContract(trade.contractId); } catch (e) { console.error("Close error:", e.message); }
-    }
-    const closeTime = new Date().toISOString().replace("T"," ").substring(0,19);
+    if (trade.contractId) { try { await closeContract(trade.contractId); } catch (e) { console.error("Close error:", e.message); } }
     const pnl = trade.direction === "BUY" ? currentPrice - trade.entry : trade.entry - currentPrice;
-    trade.result = result; trade.closeTime = closeTime;
+    trade.result = result; trade.closeTime = new Date().toISOString().replace("T"," ").substring(0,19);
     await sendTelegram(`🔒 Manual close (${reason}): ${trade.direction} @ ${trade.entry} → ${currentPrice.toFixed(4)} | ${result} | PnL: ${pnl.toFixed(4)} pts`);
   }
   fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
@@ -95,9 +94,9 @@ let state = { waitingFor: null, setupEpoch: null, lastProcessedEpoch: null, last
 try { const s = JSON.parse(fs.readFileSync("state.json")); state = { ...state, ...s, waitingFor: s.waitingFor ?? null, setupEpoch: s.setupEpoch ?? null }; } catch {}
 
 (async () => {
-  if (MODE === "daily")   { await runSummary("Daily");   return; }
-  if (MODE === "weekly")  { await runSummary("Weekly");  return; }
-  if (MODE === "monthly") { await runSummary("Monthly"); return; }
+  if (MODE === "daily")      { await runSummary("Daily");   return; }
+  if (MODE === "weekly")     { await runSummary("Weekly");  return; }
+  if (MODE === "monthly")    { await runSummary("Monthly"); return; }
   if (MODE === "close_win")  { await executeManualClose("WIN",  "manual command"); return; }
   if (MODE === "close_loss") { await executeManualClose("LOSS", "manual command"); return; }
   if (MODE === "test") {
@@ -133,8 +132,7 @@ async function fetchCandles(granularity, count = 100) {
     return new Promise((resolve, reject) => {
       ws.send(JSON.stringify({ ticks_history: SYMBOL, granularity, count, end: "latest", style: "candles" }));
       ws.on("message", d => {
-        const msg = JSON.parse(d);
-        ws.close();
+        const msg = JSON.parse(d); ws.close();
         if (msg.candles) resolve(msg.candles);
         else reject(new Error("No candles: " + JSON.stringify(msg)));
       });
@@ -149,8 +147,7 @@ async function getCurrentPrice(sym = SYMBOL) {
     return new Promise((resolve, reject) => {
       ws.send(JSON.stringify({ ticks: sym, subscribe: 0 }));
       ws.on("message", d => {
-        const msg = JSON.parse(d);
-        ws.close();
+        const msg = JSON.parse(d); ws.close();
         if (msg.tick) resolve(parseFloat(msg.tick.quote));
         else reject(new Error("No tick"));
       });
@@ -167,8 +164,7 @@ async function getDerivAccountId() {
       ws.on("message", d => {
         const msg = JSON.parse(d);
         if (msg.authorize) {
-          const accounts = msg.authorize.account_list || [];
-          const acc = accounts.find(a => a.account_type !== "demo");
+          const acc = (msg.authorize.account_list || []).find(a => a.account_type !== "demo");
           ws.close(); resolve(acc ? acc.loginid : null);
         } else { ws.close(); reject(new Error("Auth failed")); }
       });
@@ -177,27 +173,9 @@ async function getDerivAccountId() {
   });
 }
 
-async function getDerivOTP(loginid) {
-  return withRetry(async () => {
-    const ws = await openWS();
-    return new Promise((resolve, reject) => {
-      ws.send(JSON.stringify({ authorize: DERIV_TOKEN }));
-      ws.on("message", d => {
-        const msg = JSON.parse(d);
-        if (msg.authorize) {
-          ws.send(JSON.stringify({ transfer_between_accounts: 1, accounts: "all" }));
-        } else if (msg.transfer_between_accounts !== undefined) {
-          ws.close(); resolve(null);
-        } else { ws.close(); reject(new Error("OTP flow failed")); }
-      });
-      setTimeout(() => { ws.close(); reject(new Error("getDerivOTP timeout")); }, 15000);
-    });
-  });
-}
-
 async function executeTrade(direction) {
   return withRetry(async () => {
-    const loginid = await getDerivAccountId();
+    await getDerivAccountId();
     const ws = await openWS();
     return new Promise((resolve, reject) => {
       ws.send(JSON.stringify({ authorize: DERIV_TOKEN }));
@@ -205,10 +183,19 @@ async function executeTrade(direction) {
         const msg = JSON.parse(d);
         if (msg.authorize) {
           const contractType = direction === "BUY" ? "MULTUP" : "MULTDOWN";
-          ws.send(JSON.stringify({ buy: 1, price: STAKE_USD, parameters: { contract_type: contractType, symbol: TRADING_SYMBOL, multiplier: MULTIPLIER, basis: "stake", duration_unit: "s", limit_order: { stop_loss: { order_amount: STAKE_USD * 0.5, order_type: "stop_loss" } } } }));
+          ws.send(JSON.stringify({
+            buy: 1, price: STAKE_USD,
+            parameters: {
+              contract_type: contractType, symbol: TRADING_SYMBOL,
+              multiplier: MULTIPLIER, basis: "stake",
+              limit_order: {
+                stop_loss:   parseFloat((STAKE_USD * 0.5).toFixed(2)),
+                take_profit: parseFloat((STAKE_USD * 0.5 * RISK_REWARD).toFixed(2))
+              }
+            }
+          }));
         } else if (msg.buy) {
-          const contractId = msg.buy.contract_id;
-          ws.close(); resolve(contractId);
+          ws.close(); resolve(msg.buy.contract_id);
         } else if (msg.error) { ws.close(); reject(new Error(msg.error.message)); }
       });
       setTimeout(() => { ws.close(); reject(new Error("executeTrade timeout")); }, 20000);
@@ -223,11 +210,9 @@ async function closeContract(contractId) {
       ws.send(JSON.stringify({ authorize: DERIV_TOKEN }));
       ws.on("message", d => {
         const msg = JSON.parse(d);
-        if (msg.authorize) {
-          ws.send(JSON.stringify({ sell: contractId, price: 0 }));
-        } else if (msg.sell) {
-          ws.close(); resolve(msg.sell);
-        } else if (msg.error) { ws.close(); reject(new Error(msg.error.message)); }
+        if (msg.authorize) { ws.send(JSON.stringify({ sell: contractId, price: 0 })); }
+        else if (msg.sell) { ws.close(); resolve(msg.sell); }
+        else if (msg.error) { ws.close(); reject(new Error(msg.error.message)); }
       });
       setTimeout(() => { ws.close(); reject(new Error("closeContract timeout")); }, 20000);
     });
@@ -242,8 +227,7 @@ function sma(data, period) {
 }
 
 function ema(data, period) {
-  const k = 2 / (period + 1); const result = [];
-  let prev = null;
+  const k = 2 / (period + 1); const result = []; let prev = null;
   for (let i = 0; i < data.length; i++) {
     if (i < period - 1) { result.push(null); continue; }
     if (i === period - 1) { prev = data.slice(0, period).reduce((a,b)=>a+b,0)/period; result.push(prev); continue; }
@@ -268,9 +252,10 @@ function calcUnrealizedPnL(trade, currentPrice) {
   return 0;
 }
 
+// A: lookback window excludes the trigger candle (candles[-2]) AND the in-progress candle (candles[-1])
 function getFractals(candles) {
-  const lookback = Math.min(6, candles.length - 1);
-  const slice = candles.slice(-lookback - 1, -1);
+  const lookback = Math.min(6, candles.length - 2);
+  const slice = candles.slice(-lookback - 2, -2);
   let significantHigh = null, significantLow = null;
   for (const c of slice) {
     const h = parseFloat(c.high), l = parseFloat(c.low);
@@ -315,20 +300,80 @@ async function runScanMode() {
   let trades = [];
   try { trades = JSON.parse(fs.readFileSync("trades.json")); } catch {}
 
-  // ── Trade management for open position ──────────────────────────────────
+  // ── Trade management ─────────────────────────────────────────────────────
   const openTrade = trades.find(t => !t.result);
   if (openTrade) {
     const currentPrice = await getCurrentPrice();
     const pnl = calcUnrealizedPnL(openTrade, currentPrice);
     dbg(`Open trade PnL: ${pnl.toFixed(4)}`);
 
-    if (pnl >= SAFETY_TP_USD && !openTrade.tp1Reached) {
-      openTrade.tp1Reached = true;
-      openTrade.macdEarlyFlipEpoch = null;
+    const closeWith = async (result, reason) => {
+      openTrade.result = result;
+      openTrade.closeTime = new Date().toISOString().replace("T"," ").substring(0,19);
+      if (openTrade.contractId) { try { await closeContract(openTrade.contractId); } catch (e) { console.error("Close error:", e.message); } }
       fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
-      await sendTelegram(`🎯 TP1 reached on ${openTrade.direction} trade! Trailing with MACD(8,100) now.`);
+      await sendTelegram(reason);
+    };
+
+    // B4: Price-based hard SL (independent of Deriv server-side SL)
+    const slBreached = openTrade.direction === "BUY"  ? currentPrice <= openTrade.sl
+                                                      : currentPrice >= openTrade.sl;
+    if (slBreached) {
+      await closeWith("LOSS", `🛑 Hard SL hit | ${openTrade.direction} | Price: ${currentPrice.toFixed(4)} | SL: ${openTrade.sl.toFixed(4)} | PnL: ${pnl.toFixed(4)} pts`);
+      return;
     }
 
+    // B5: Safety TP — dollar ceiling, hard close
+    if (pnl >= SAFETY_TP_USD) {
+      await closeWith("WIN", `💰 Safety TP hit | ${openTrade.direction} | PnL: $${pnl.toFixed(2)}`);
+      return;
+    }
+
+    // B5: TP1 price level — soft trigger that switches exit mode
+    if (!openTrade.tp1Reached) {
+      const tp1Hit = openTrade.direction === "BUY"  ? currentPrice >= openTrade.tp1
+                                                    : currentPrice <= openTrade.tp1;
+      if (tp1Hit) {
+        openTrade.tp1Reached = true;
+        openTrade.macdEarlyFlipEpoch = null;
+        fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
+        await sendTelegram(`🎯 TP1 price level reached on ${openTrade.direction} — switching to MACD(8,100) trail.`);
+      }
+    }
+
+    // B1: High-water-mark trailing
+    if (pnl >= TRAIL_ACTIVATE_USD) {
+      if (openTrade.peakProfit === null || pnl > openTrade.peakProfit) {
+        openTrade.peakProfit = pnl;
+        fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
+      }
+      if (openTrade.peakProfit !== null && pnl < openTrade.peakProfit - TRAIL_DROP_USD) {
+        const result = pnl >= 0 ? "WIN" : "LOSS";
+        await closeWith(result, `📉 High-water trail exit: ${result} | ${openTrade.direction} | Peak: $${openTrade.peakProfit.toFixed(2)} | Now: $${pnl.toFixed(2)}`);
+        return;
+      }
+    }
+
+    // B2: Pre-TP1 exit — M5 SMA(2)/SMA(50) turns against trade direction
+    if (!openTrade.tp1Reached) {
+      const m5Early = await fetchCandles(M5, 60);
+      if (m5Early && m5Early.length >= 52) {
+        const cls = m5Early.map(c => parseFloat(c.close));
+        const sf = sma(cls, 2), ss = sma(cls, 50);
+        const ci = m5Early.length - 2;
+        if (sf[ci] != null && ss[ci] != null) {
+          const m5Against = openTrade.direction === "BUY"  ? sf[ci] < ss[ci]
+                                                           : sf[ci] > ss[ci];
+          if (m5Against) {
+            const result = pnl >= 0 ? "WIN" : "LOSS";
+            await closeWith(result, `⚡ M5 reversal exit (pre-TP1): ${result} | ${openTrade.direction} | PnL: ${pnl.toFixed(4)} pts`);
+            return;
+          }
+        }
+      }
+    }
+
+    // B3: Post-TP1 MACD(8,100) trailing exit
     if (openTrade.tp1Reached) {
       const m5c = await fetchCandles(M5, 120);
       if (m5c && m5c.length >= 100) {
@@ -345,10 +390,7 @@ async function runScanMode() {
               fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
             } else if (m5c[ci].epoch > openTrade.macdEarlyFlipEpoch) {
               const result = pnl >= 0 ? "WIN" : "LOSS";
-              openTrade.result = result; openTrade.closeTime = new Date().toISOString().replace("T"," ").substring(0,19);
-              if (openTrade.contractId) { try { await closeContract(openTrade.contractId); } catch (e) { console.error("Close error:", e.message); } }
-              fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
-              await sendTelegram(`🏁 MACD trail exit: ${result} | ${openTrade.direction} | PnL: ${pnl.toFixed(4)} pts`);
+              await closeWith(result, `🏁 MACD trail exit: ${result} | ${openTrade.direction} | PnL: ${pnl.toFixed(4)} pts`);
               return;
             }
           } else { openTrade.macdEarlyFlipEpoch = null; fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2)); }
@@ -358,17 +400,15 @@ async function runScanMode() {
 
     // H1-open hard stop
     if (openTrade.h1OpenAtEntry != null) {
-      const stopBreach = openTrade.direction === "BUY"  ? currentPrice < openTrade.h1OpenAtEntry
-                                                        : currentPrice > openTrade.h1OpenAtEntry;
-      if (stopBreach) {
+      const h1Breach = openTrade.direction === "BUY"  ? currentPrice < openTrade.h1OpenAtEntry
+                                                      : currentPrice > openTrade.h1OpenAtEntry;
+      if (h1Breach) {
         const result = pnl >= 0 ? "WIN" : "LOSS";
-        openTrade.result = result; openTrade.closeTime = new Date().toISOString().replace("T"," ").substring(0,19);
-        if (openTrade.contractId) { try { await closeContract(openTrade.contractId); } catch (e) { console.error("Close error:", e.message); } }
-        fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
-        await sendTelegram(`🛑 H1-open breach exit: ${result} | ${openTrade.direction} | Price: ${currentPrice.toFixed(4)} | H1 Open: ${openTrade.h1OpenAtEntry.toFixed(4)} | PnL: ${pnl.toFixed(4)} pts`);
+        await closeWith(result, `🛑 H1-open breach exit: ${result} | ${openTrade.direction} | Price: ${currentPrice.toFixed(4)} | H1 Open: ${openTrade.h1OpenAtEntry.toFixed(4)} | PnL: ${pnl.toFixed(4)} pts`);
         return;
       }
     }
+
     console.log("Open trade being managed — skipping scan.");
     return;
   }
@@ -377,7 +417,7 @@ async function runScanMode() {
   const candles = await fetchCandles(M5, 120);
   if (!candles || candles.length < 60) { console.log("Not enough M5 candles."); return; }
 
-  const i = candles.length - 2; // last completed candle
+  const i = candles.length - 2;
   const currentCandleEpoch = candles[i].epoch;
   const closes = candles.map(c => parseFloat(c.close));
 
@@ -425,27 +465,20 @@ async function runScanMode() {
 
   dbg(`H1 dir: ${h1Dir} | M15 dir: ${m15Dir} | M5 dir: ${m5Dir}`);
 
-  // Alignment is a live state — all three timeframes currently pointing the same direction
   const aligned = h1Dir && m15Dir && m5Dir && h1Dir === m15Dir && m15Dir === m5Dir;
   if (aligned) {
     if (state.waitingFor !== h1Dir) {
-      state.waitingFor  = h1Dir;
-      state.setupEpoch  = currentCandleEpoch;
+      state.waitingFor = h1Dir; state.setupEpoch = currentCandleEpoch;
       console.log(`Alignment detected: ${h1Dir} — setup clock started.`);
-    } else {
-      console.log(`Alignment continues: ${h1Dir} — setup clock preserved.`);
-    }
+    } else { console.log(`Alignment continues: ${h1Dir} — setup clock preserved.`); }
   } else {
     if (state.waitingFor) console.log(`Alignment broken (H1:${h1Dir} M15:${m15Dir} M5:${m5Dir}) — clearing setup.`);
-    state.waitingFor = null;
-    state.setupEpoch = null;
+    state.waitingFor = null; state.setupEpoch = null;
   }
 
-  // Expiry: setup too stale, drop it
   if (state.waitingFor && state.setupEpoch && (currentCandleEpoch - state.setupEpoch) > (SETUP_EXPIRY_BARS * M5)) {
     console.log("Setup expired — clearing.");
-    state.waitingFor = null;
-    state.setupEpoch = null;
+    state.waitingFor = null; state.setupEpoch = null;
   }
 
   const candleRange = highs[i] - lows[i];
@@ -460,9 +493,7 @@ async function runScanMode() {
   const h4Candle = await fetchH4Candle();
   if (!h4Candle) {
     console.log("⚠️ H4 unavailable — skipping signal scan.");
-    state.lastProcessedEpoch = currentCandleEpoch;
-    fs.writeFileSync("state.json", JSON.stringify(state, null, 2));
-    return;
+    state.lastProcessedEpoch = currentCandleEpoch; fs.writeFileSync("state.json", JSON.stringify(state, null, 2)); return;
   }
   const h4Bullish = parseFloat(h4Candle.close) > parseFloat(h4Candle.open);
   const h4Bearish = parseFloat(h4Candle.close) < parseFloat(h4Candle.open);
@@ -495,7 +526,7 @@ async function runScanMode() {
     message += `⏰ Time (UTC): ${timeFormatted}\n\n💡 To close manually: send \`/close win\` or \`/close loss\` in this chat`;
 
     await sendTelegram(message);
-    trades.push({ id: `${SYMBOL}-${isoTime}`, contractId: null, repo: REPO_LABEL, symbol: SYMBOL, direction, entry, sl, tp1, tp2, tp3, h1OpenAtEntry, tp1Reached: false, macdEarlyFlipEpoch: null, lastInProfit: null, peakProfit: null, rr: RISK_REWARD, openTime: timeFormatted, closeTime: null, result: null });
+    trades.push({ id: `${SYMBOL}-${isoTime}`, contractId: null, repo: REPO_LABEL, symbol: SYMBOL, direction, entry, sl, tp1, tp2, tp3, h1OpenAtEntry, tp1Reached: false, macdEarlyFlipEpoch: null, peakProfit: null, rr: RISK_REWARD, openTime: timeFormatted, closeTime: null, result: null });
     fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
     try { const contractId = await executeTrade(direction); if (contractId) { trades[trades.length-1].contractId = contractId; fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2)); } } catch (execErr) { console.error("⚠️ Live execution warning:", execErr.message); }
     state.waitingFor = null; state.setupEpoch = null;
