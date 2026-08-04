@@ -14,7 +14,8 @@ const TRAIL_ACTIVATE_USD = 5;    // start high-water-mark trailing at this profi
 const TRAIL_DROP_USD     = 3;    // exit if profit drops this much from peak
 const ATR_PERIOD         = 14;
 const SETUP_EXPIRY_BARS  = 35;
-const APP_ID         = process.env.DERIV_APP_ID   || "67418";
+const MARKET_DATA_APP_ID = "1089";
+const DERIV_APP_ID       = process.env.DERIV_APP_ID;
 const TG_TOKEN       = process.env.TG_TOKEN;
 const TG_CHAT_ID     = process.env.TG_CHAT_ID;
 const DERIV_TOKEN    = process.env.DERIV_API_TOKEN;
@@ -94,10 +95,11 @@ async function executeManualClose(result, reason) {
     const contractType = trade.direction === "BUY" ? "MULTUP" : "MULTDOWN";
     const durationMs = new Date(trade.closeTime) - new Date(trade.openTime);
     const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
+    const tpDollars = parseFloat((slDollars * RISK_REWARD).toFixed(2));
     const pnl = trade.direction === "BUY" ? (currentPrice - trade.entry) / trade.entry * STAKE_USD * MULTIPLIER : (trade.entry - currentPrice) / trade.entry * STAKE_USD * MULTIPLIER;
     const pnlStr = pnl >= 0 ? `+$${pnl.toFixed(2)}` : `-$${Math.abs(pnl).toFixed(2)}`;
     const tp1Status = trade.tp1Reached ? "✅ TP1 hit" : "❌ TP1 not reached";
-    await sendTelegram(`${icon} *${REPO_LABEL} — Trade ${result}*\n\nDirection: ${trade.direction} (${contractType})\nSymbol:    ${SYMBOL_NAME}\n\n📍 Entry:  ${trade.entry.toFixed(4)}\n🏁 Exit:   ${currentPrice.toFixed(4)}\n🛑 SL:     ${trade.sl.toFixed(4)}  ($${slDollars} hard)\n🎯 TP1:    ${trade.tp1.toFixed(4)}  ${tp1Status}\n\n💵 P&L: ${pnlStr}\nReason: ${reason}\nDuration: ${formatDuration(durationMs)}\n\nOpened:  ${trade.openTime}\nClosed:  ${trade.closeTime}\n` + (trade.contractId ? `Contract: \`${trade.contractId}\`` : ""));
+    await sendTelegram(`${icon} *${REPO_LABEL} — Trade ${result}*\n\nDirection: ${trade.direction} (${contractType})\nSymbol:    ${SYMBOL_NAME}\n\n📍 Entry:  ${trade.entry.toFixed(4)}\n🏁 Exit:   ${currentPrice.toFixed(4)}\n🛑 SL:     ${trade.sl.toFixed(4)}  ($${slDollars} hard)\n🎯 TP1:    ${trade.tp1.toFixed(4)}  ($${tpDollars} soft)  ${tp1Status}\n\n💵 P&L: ${pnlStr}\nReason: ${reason}\nDuration: ${formatDuration(durationMs)}\n\nOpened:  ${trade.openTime}\nClosed:  ${trade.closeTime}\n` + (trade.contractId ? `Contract: \`${trade.contractId}\`` : ""));
   }
 }
 
@@ -121,7 +123,7 @@ try { const s = JSON.parse(fs.readFileSync("state.json")); state = { ...state, .
 
 function openWS() {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`wss://ws.binaryws.com/websockets/v3?app_id=${APP_ID}`);
+    const ws = new WebSocket(`wss://ws.binaryws.com/websockets/v3?app_id=${MARKET_DATA_APP_ID}`);
     ws.on("open", () => resolve(ws));
     ws.on("error", reject);
     setTimeout(() => reject(new Error("WS timeout")), 15000);
@@ -168,7 +170,7 @@ async function getCurrentPrice(sym = SYMBOL) {
 }
 
 async function getDerivAccountId() {
-  const res = await fetch("https://api.derivws.com/trading/v1/options/accounts", { headers: { "Deriv-App-ID": APP_ID, "Authorization": `Bearer ${DERIV_TOKEN}` } });
+  const res = await fetch("https://api.derivws.com/trading/v1/options/accounts", { headers: { "Deriv-App-ID": DERIV_APP_ID, "Authorization": `Bearer ${DERIV_TOKEN}` } });
   const json = await res.json();
   if (!res.ok) throw new Error(`getAccounts failed: ${JSON.stringify(json.errors || json)}`);
   const accounts = json.data;
@@ -179,7 +181,7 @@ async function getDerivAccountId() {
 }
 
 async function getDerivOTP(accountId) {
-  const res = await fetch(`https://api.derivws.com/trading/v1/options/accounts/${accountId}/otp`, { method: "POST", headers: { "Deriv-App-ID": APP_ID, "Authorization": `Bearer ${DERIV_TOKEN}` } });
+  const res = await fetch(`https://api.derivws.com/trading/v1/options/accounts/${accountId}/otp`, { method: "POST", headers: { "Deriv-App-ID": DERIV_APP_ID, "Authorization": `Bearer ${DERIV_TOKEN}` } });
   const json = await res.json();
   if (!res.ok) throw new Error(`getOTP failed: ${JSON.stringify(json.errors || json)}`);
   console.log(`   OTP WebSocket URL obtained ✅`);
@@ -188,7 +190,7 @@ async function getDerivOTP(accountId) {
 
 async function executeTrade(direction) {
   if (!DERIV_TOKEN) { console.log("⚠️ DERIV_API_TOKEN not set. Skipping."); return null; }
-  if (!APP_ID) { console.log("⚠️ DERIV_APP_ID not set. Skipping."); return null; }
+  if (!DERIV_APP_ID) { console.log("⚠️ DERIV_APP_ID not set. Skipping."); return null; }
   if (!PROXY_URL || !PROXY_SECRET) { console.log("⚠️ PROXY_URL or PROXY_SECRET not set. Skipping."); return null; }
   console.log(`🔄 Sending ${direction} trade via Cloudflare proxy...`);
   const accountId = await getDerivAccountId();
@@ -205,7 +207,7 @@ async function executeTrade(direction) {
 }
 
 async function closeContract(contractId) {
-  if (!DERIV_TOKEN || !contractId || !PROXY_URL || !PROXY_SECRET || !APP_ID) return;
+  if (!DERIV_TOKEN || !contractId || !PROXY_URL || !PROXY_SECRET || !DERIV_APP_ID) return;
   console.log(`🔄 Closing contract ${contractId} via proxy...`);
   const accountId = await getDerivAccountId();
   const wsUrl = await getDerivOTP(accountId);
@@ -310,9 +312,10 @@ async function runScanMode() {
       const contractType = openTrade.direction === "BUY" ? "MULTUP" : "MULTDOWN";
       const durationMs = new Date(openTrade.closeTime) - new Date(openTrade.openTime);
       const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
+      const tpDollars = parseFloat((slDollars * RISK_REWARD).toFixed(2));
       const tp1Status = openTrade.tp1Reached ? "✅ TP1 hit" : "❌ TP1 not reached";
       const pnlStr = pnl >= 0 ? `+$${pnl.toFixed(2)}` : `-$${Math.abs(pnl).toFixed(2)}`;
-      await sendTelegram(`${icon} *${REPO_LABEL} — Trade ${result}*\n\nDirection: ${openTrade.direction} (${contractType})\nSymbol:    ${SYMBOL_NAME}\n\n📍 Entry:  ${openTrade.entry.toFixed(4)}\n🏁 Exit:   ${currentPrice.toFixed(4)}\n🛑 SL:     ${openTrade.sl.toFixed(4)}  ($${slDollars} hard)\n🎯 TP1:    ${openTrade.tp1.toFixed(4)}  ${tp1Status}\n\n💵 P&L: ${pnlStr}\nReason: ${exitReason}\nDuration: ${formatDuration(durationMs)}\n\nOpened:  ${openTrade.openTime}\nClosed:  ${openTrade.closeTime}\n` + (openTrade.contractId ? `Contract: \`${openTrade.contractId}\`` : ""));
+      await sendTelegram(`${icon} *${REPO_LABEL} — Trade ${result}*\n\nDirection: ${openTrade.direction} (${contractType})\nSymbol:    ${SYMBOL_NAME}\n\n📍 Entry:  ${openTrade.entry.toFixed(4)}\n🏁 Exit:   ${currentPrice.toFixed(4)}\n🛑 SL:     ${openTrade.sl.toFixed(4)}  ($${slDollars} hard)\n🎯 TP1:    ${openTrade.tp1.toFixed(4)}  ($${tpDollars} soft)  ${tp1Status}\n\n💵 P&L: ${pnlStr}\nReason: ${exitReason}\nDuration: ${formatDuration(durationMs)}\n\nOpened:  ${openTrade.openTime}\nClosed:  ${openTrade.closeTime}\n` + (openTrade.contractId ? `Contract: \`${openTrade.contractId}\`` : ""));
     };
 
     const slBreached = openTrade.direction === "BUY" ? currentPrice <= openTrade.sl : currentPrice >= openTrade.sl;
