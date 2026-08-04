@@ -158,11 +158,11 @@ async function getCurrentPrice(sym = SYMBOL) {
   return withRetry(async () => {
     const ws = await openWS();
     return new Promise((resolve, reject) => {
-      ws.send(JSON.stringify({ ticks: sym, subscribe: 0 }));
+      ws.send(JSON.stringify({ ticks_history: sym, count: 1, end: "latest", style: "ticks" }));
       ws.on("message", d => {
         const msg = JSON.parse(d); ws.close();
-        if (msg.tick) resolve(parseFloat(msg.tick.quote));
-        else reject(new Error("No tick"));
+        if (msg.history?.prices?.length) resolve(parseFloat(msg.history.prices[msg.history.prices.length - 1]));
+        else reject(new Error("No price: " + JSON.stringify(msg)));
       });
       setTimeout(() => { ws.close(); reject(new Error("getCurrentPrice timeout")); }, 10000);
     });
