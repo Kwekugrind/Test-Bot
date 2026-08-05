@@ -33,10 +33,7 @@ const DEBUG = process.env.DEBUG === "true";
 function dbg(...a) { if (DEBUG) console.log("[DBG]", ...a); }
 
 async function sendTelegram(msg) {
-  if (!TG_TOKEN || !TG_CHAT_ID) {
-    console.warn("Telegram not configured: TG_TOKEN or TG_CHAT_ID is missing. Skipping sendTelegram.");
-    return { ok: false, error: "missing_credentials" };
-  }
+  if (!TG_TOKEN || !TG_CHAT_ID) return;
   const send = async (text, parseMode) => {
     const body = { chat_id: TG_CHAT_ID, text };
     if (parseMode) body.parse_mode = parseMode;
@@ -44,25 +41,18 @@ async function sendTelegram(msg) {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
     });
-    let json;
-    try { json = await res.json(); } catch (e) { json = { ok: false, error: `invalid_json_response: ${e.message}` }; }
-    json.__http_status = res.status;
-    return json;
+    return res.json();
   };
   try {
     const data = await send(msg, "Markdown");
     if (!data.ok) {
-      console.error(`Telegram Markdown rejected (${data.error_code || data.error || 'unknown'}): ${data.description || JSON.stringify(data)}`);
+      console.error(`Telegram Markdown rejected (${data.error_code}): ${data.description}`);
+      // Strip markdown symbols and retry as plain text so the alert always arrives
       const plain = msg.replace(/[*_`\[\]]/g, "");
       const retry = await send(plain, "");
-      if (!retry.ok) {
-        console.error(`Telegram plain-text retry also failed: ${retry.description || JSON.stringify(retry)}`);
-        return { ok: false, error: "telegram_send_failed", detail: retry };
-      }
-      return { ok: true, via: "plain_text", detail: retry };
+      if (!retry.ok) console.error(`Telegram plain-text retry also failed: ${retry.description}`);
     }
-    return { ok: true, via: "markdown", detail: data };
-  } catch (e) { console.error("Telegram fetch error:", e.message); return { ok: false, error: e.message }; }
+  } catch (e) { console.error("Telegram fetch error:", e.message); }
 }
 
 function formatDuration(ms) {
@@ -78,16 +68,13 @@ async function runSummary(label) {
   const wins = closed.filter(t => t.result === "WIN").length;
   const losses = closed.filter(t => t.result === "LOSS").length;
   const openTrades = trades.filter(t => !t.result);
-  let msg = `📊 *${label} Summary — ${REPO_LABEL}*\n\nTotal closed: ${closed.length}\n✅ Wins: ${wins} | ❌ Losses: ${losses}\nWin rate: ${closed.length ? ((wins/closed.length)*100).toFixed([...]
+  let msg = `📊 *${label} Summary — ${REPO_LABEL}*\n\nTotal closed: ${closed.length}\n✅ Wins: ${wins} | ❌ Losses: ${losses}\nWin rate: ${closed.length ? ((wins/closed.length)*100).toFixed([...]`
   if (openTrades.length) msg += "\n\n*Open trades:*\n" + openTrades.map(t => `• ${t.direction} @ ${t.entry} (${t.openTime})`).join("\n");
   await sendTelegram(msg);
 }
 
 async function checkTelegramCommands() {
-  if (!TG_TOKEN || !TG_CHAT_ID) {
-    console.warn("checkTelegramCommands: TG_TOKEN or TG_CHAT_ID not set; skipping command polling.");
-    return;
-  }
+  if (!TG_TOKEN || !TG_CHAT_ID) return;
   try {
     const url = `https://api.telegram.org/bot${TG_TOKEN}/getUpdates?offset=${state.lastTgUpdateId + 1}&limit=10&timeout=0`;
     const res = await fetch(url); const data = await res.json();
@@ -205,260 +192,3 @@ async function getDerivAccountId() {
   console.log(`   Account ID: ${account.account_id} (${account.account_type})`);
   return account.account_id;
 }
-
-async function getDerivOTP(accountId) {
-  const res = await fetch(`https://api.derivws.com/trading/v1/options/accounts/${accountId}/otp`, { method: "POST", headers: { "Deriv-App-ID": DERIV_APP_ID, "Authorization": `Bearer ${DERIV_TOKEN}` } });
-  const json = await res.json();
-  if (!res.ok) throw new Error(`getOTP failed: ${JSON.stringify(json.errors || json)}`);
-  console.log(`   OTP WebSocket URL obtained ✅`);
-  return json.data.url;
-}
-
-async function executeTrade(direction) {
-  if (!DERIV_TOKEN) { console.log("⚠️ DERIV_API_TOKEN not set. Skipping."); return null; }
-  if (!DERIV_APP_ID) { console.log("⚠️ DERIV_APP_ID not set. Skipping."); return null; }
-  if (!PROXY_URL || !PROXY_SECRET) { console.log("⚠️ PROXY_URL or PROXY_SECRET not set. Skipping."); return null; }
-  console.log(`🔄 Sending ${direction} trade via Cloudflare proxy...`);
-  const accountId = await getDerivAccountId();
-  const wsUrl = await getDerivOTP(accountId);
-  const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
-  const params = { buy: "1", price: STAKE_USD, parameters: { contract_type: direction === "BUY" ? "MULTUP" : "MULTDOWN", underlying_symbol: TRADING_SYMBOL, currency: "USD", amount: STAKE_USD, bas[...]
-  const response = await fetch(PROXY_URL, { method: "POST", headers: { "Content-Type": "application/json", "x-proxy-secret": PROXY_SECRET }, body: JSON.stringify({ wsUrl, action: "buy", params })[...]
-  const data = await response.json();
-  console.log("📨 Proxy response:", JSON.stringify(data));
-  if (data.error) throw new Error(data.error);
-  const contractId = data.buy?.contract_id;
-  if (contractId) { console.log(`✅ Trade Executed! Contract ID: ${contractId}`); return contractId; }
-  return null;
-}
-
-async function closeContract(contractId) {
-  if (!DERIV_TOKEN || !contractId || !PROXY_URL || !PROXY_SECRET || !DERIV_APP_ID) return;
-  console.log(`🔄 Closing contract ${contractId} via proxy...`);
-  const accountId = await getDerivAccountId();
-  const wsUrl = await getDerivOTP(accountId);
-  const response = await fetch(PROXY_URL, { method: "POST", headers: { "Content-Type": "application/json", "x-proxy-secret": PROXY_SECRET }, body: JSON.stringify({ wsUrl, action: "sell", params: [...]
-  const data = await response.json();
-  console.log("📨 Close response:", JSON.stringify(data));
-  return data;
-}
-
-function sma(data, period) {
-  return data.map((_, i) => {
-    if (i < period - 1) return null;
-    return data.slice(i - period + 1, i + 1).reduce((a, b) => a + b, 0) / period;
-  });
-}
-
-function ema(data, period) {
-  const k = 2 / (period + 1); const result = []; let prev = null;
-  for (let i = 0; i < data.length; i++) {
-    if (i < period - 1) { result.push(null); continue; }
-    if (i === period - 1) { prev = data.slice(0, period).reduce((a,b)=>a+b,0)/period; result.push(prev); continue; }
-    prev = data[i] * k + prev * (1 - k); result.push(prev);
-  }
-  return result;
-}
-
-function calculateATR(candles, period) {
-  const trs = candles.map((c, i) => {
-    if (i === 0) return parseFloat(c.high) - parseFloat(c.low);
-    const ph = parseFloat(candles[i-1].close);
-    return Math.max(parseFloat(c.high)-parseFloat(c.low), Math.abs(parseFloat(c.high)-ph), Math.abs(parseFloat(c.low)-ph));
-  });
-  const atrs = sma(trs, period);
-  return atrs[atrs.length - 1] || (trs.reduce((a,b)=>a+b,0)/trs.length);
-}
-
-function calcUnrealizedPnL(trade, currentPrice) {
-  if (trade.direction === "BUY")  return (currentPrice - trade.entry) / trade.entry * STAKE_USD * MULTIPLIER;
-  if (trade.direction === "SELL") return (trade.entry - currentPrice) / trade.entry * STAKE_USD * MULTIPLIER;
-  return 0;
-}
-
-function getFractals(candles) {
-  const pivots = [];
-  for (let i = 2; i < candles.length - 2; i++) {
-    const h = parseFloat(candles[i].high);
-    const l = parseFloat(candles[i].low);
-    if (
-      h > parseFloat(candles[i-1].high) && h > parseFloat(candles[i-2].high) &&
-      h > parseFloat(candles[i+1].high) && h > parseFloat(candles[i+2].high)
-    ) pivots.push({ type: "high", value: h });
-    if (
-      l < parseFloat(candles[i-1].low) && l < parseFloat(candles[i-2].low) &&
-      l < parseFloat(candles[i+1].low) && l < parseFloat(candles[i+2].low)
-    ) pivots.push({ type: "low", value: l });
-  }
-  const recent = pivots.slice(-6);
-  const highs = recent.filter(p => p.type === "high").map(p => p.value);
-  const lows  = recent filter(p => p.type === "low").map(p => p.value);
-  const significantHigh = highs.length ? Math.max(...highs) : null;
-  const significantLow  = lows.length  ? Math.min(...lows)  : null;
-  return { significantHigh, significantLow };
-}
-
-async function fetchH4Candle() {
-  try {
-    const candles = await fetchCandles(H4, 10);
-    if (!candles || candles.length < 2) return null;
-    return candles[candles.length - 2];
-  } catch (e) { console.error("fetchH4Candle error:", e.message); return null; }
-}
-
-async function getD1Context() {
-  try {
-    const candles = await fetchCandles(D1, 5);
-    if (!candles || candles.length < 2) return null;
-    const c = candles[candles.length - 2];
-    const open = parseFloat(c.open), close = parseFloat(c.close);
-    const change = close - open, changePct = (change / open) * 100;
-    return { direction: close > open ? "🟢 BULLISH" : "🔴 BEARISH", open, close, change, changePct };
-  } catch (e) { console.error("getD1Context error:", e.message); return null; }
-}
-
-function checkAlignment(signalDir, d1Dir) {
-  const bull = d1Dir.includes("BULLISH"), bear = d1Dir.includes("BEARISH");
-  if (signalDir === "BUY"  && bull) return "✅ D1 confirms BUY";
-  if (signalDir === "SELL" && bear) return "✅ D1 confirms SELL";
-  if (signalDir === "BUY"  && bear) return "⚠️ Counter-trend BUY (D1 bearish)";
-  if (signalDir === "SELL" && bull) return "⚠️ Counter-trend SELL (D1 bullish)";
-  return "❓ Unknown";
-}
-
-async function runScanMode() {
-  console.log(`[${REPO_LABEL}] Scan started — ${new Date().toISOString()}`);
-  await checkTelegramCommands();
-
-  let trades = [];
-  try { trades = JSON.parse(fs.readFileSync("trades.json")); } catch {}
-
-  const openTrade = trades.find(t => !t.result);
-  if (openTrade) {
-    const currentPrice = await getCurrentPrice();
-    const pnl = calcUnrealizedPnL(openTrade, currentPrice);
-    dbg(`Open trade PnL: ${pnl.toFixed(4)}`);
-
-    const closeWith = async (result, exitReason) => {
-      openTrade.result = result;
-      openTrade.closeTime = new Date().toISOString().replace("T"," ").substring(0,19);
-      if (openTrade.contractId) { try { await closeContract(openTrade.contractId); } catch (e) { console.error("Close error:", e.message); } }
-      fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
-      const icon = result === "WIN" ? "✅" : "❌";
-      const contractType = openTrade.direction === "BUY" ? "MULTUP" : "MULTDOWN";
-      const durationMs = new Date(openTrade.closeTime) - new Date(openTrade.openTime);
-      const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
-      const tpDollars = parseFloat((slDollars * RISK_REWARD).toFixed(2));
-      const tp1Status = openTrade.tp1Reached ? "✅ TP1 hit" : "❌ TP1 not reached";
-      const pnlStr = pnl >= 0 ? `+$${pnl.toFixed(2)}` : `-$${Math.abs(pnl).toFixed(2)}`;
-      await sendTelegram(`${icon} *${REPO_LABEL} — Trade ${result}*\n\nDirection: ${openTrade.direction} (${contractType})\nSymbol:    ${SYMBOL_NAME}\n\n📍 Entry:  ${openTrade.entry.toFixed(4[...]
-    };
-
-    const slBreached = openTrade.direction === "BUY" ? currentPrice <= openTrade.sl : currentPrice >= openTrade.sl;
-    dbg(`slBreached: ${slBreached}, tp1Reached: ${openTrade.tp1Reached}, peakProfit: ${openTrade.peakProfit}`);
-    if (slBreached) { await closeWith("LOSS", `Hard SL hit — price ${currentPrice.toFixed(4)} breached SL ${openTrade.sl.toFixed(4)}`); return; }
-
-    if (pnl >= SAFETY_TP_USD) { await closeWith("WIN", `Safety TP hit — $${SAFETY_TP_USD} ceiling reached`); return; }
-
-    if (!openTrade.tp1Reached) {
-      const tp1Hit = openTrade.direction === "BUY" ? currentPrice >= openTrade.tp1 : currentPrice <= openTrade.tp1;
-      if (tp1Hit) { openTrade.tp1Reached = true; openTrade.macdEarlyFlipEpoch = null; fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2)); await sendTelegram(`🎯 *${REPO_LABEL} —[...]
-    }
-
-    if (pnl >= TRAIL_ACTIVATE_USD) {
-      if (openTrade.peakProfit === null || pnl > openTrade.peakProfit) { openTrade.peakProfit = pnl; fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2)); }
-      if (openTrade.peakProfit !== null && pnl < openTrade.peakProfit - TRAIL_DROP_USD) { const result = pnl >= 0 ? "WIN" : "LOSS"; await closeWith(result, `Profit trail exit — locked ~$${pnl.t[...]
-    }
-
-    if (!openTrade.tp1Reached) {
-      const m5Early = await fetchCandles(M5, 60);
-      if (m5Early && m5Early.length >= 52) {
-        const cls = m5Early.map(c => parseFloat(c.close)), ci = m5Early.length - 2;
-        const sf = sma(cls, 2), ss = sma(cls, 50);
-        if (sf[ci] != null && ss[ci] != null) {
-          const m5Against = openTrade.direction === "BUY" ? sf[ci] < ss[ci] : sf[ci] > ss[ci];
-          if (m5Against) { const result = pnl >= 0 ? "WIN" : "LOSS"; await closeWith(result, `M5 SMA reversal exit (pre-TP1) — ${openTrade.direction} momentum lost`); return; }
-        }
-      }
-    }
-
-    if (openTrade.tp1Reached) {
-      const m5c = await fetchCandles(M5, 120);
-      if (m5c && m5c.length >= 100) {
-        const cls = m5c.map(c => parseFloat(c.close)), ci = m5c.length - 2;
-        const macdFast = ema(cls, 8), macdSlow = ema(cls, 100);
-        const macdVal = (macdFast[ci] != null && macdSlow[ci] != null) ? macdFast[ci] - macdSlow[ci] : null;
-        if (macdVal !== null) {
-          const flip = openTrade.direction === "BUY" ? macdVal < 0 : macdVal > 0;
-          if (flip) {
-            if (!openTrade.macdEarlyFlipEpoch) { openTrade.macdEarlyFlipEpoch = m5c[ci].epoch; fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2)); }
-            else if (m5c[ci].epoch > openTrade.macdEarlyFlipEpoch) { const result = pnl >= 0 ? "WIN" : "LOSS"; await closeWith(result, `MACD(8,100) trail exit — momentum flipped after TP1`); re[...]
-          } else { openTrade.macdEarlyFlipEpoch = null; fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2)); }
-        }
-      }
-    }
-
-    if (openTrade.h1OpenAtEntry != null) {
-      const h1Breach = openTrade.direction === "BUY" ? currentPrice < openTrade.h1OpenAtEntry : currentPrice > openTrade.h1OpenAtEntry;
-      if (h1Breach) { const result = pnl >= 0 ? "WIN" : "LOSS"; await closeWith(result, `H1 open breach — price ${currentPrice.toFixed(4)} crossed H1 open ${openTrade.h1OpenAtEntry.toFixed(4)}`[...]
-    }
-
-    console.log("Open trade being managed — skipping scan.");
-    return;
-  }
-
-  const candles = await fetchCandles(M5, 120);
-  if (!candles || candles.length < 60) { console.log("Not enough M5 candles."); return; }
-
-  const i = candles.length - 2;
-  const currentCandleEpoch = candles[i].epoch;
-  const closes = candles.map(c => parseFloat(c.close));
-  if (state.lastProcessedEpoch === currentCandleEpoch) { console.log("Already processed this candle — skipping."); return; }
-
-  const isoTime = new Date(currentCandleEpoch * 1000).toISOString();
-  const opens = candles.map(c => parseFloat(c.open));
-  const highs = candles.map(c => parseFloat(c.high));
-  const lows  = candles.map(c => parseFloat(c.low));
-  const smaFast5 = sma(closes, 2), smaSlow5 = sma(closes, 50);
-  const atr14 = calculateATR(candles, ATR_PERIOD);
-
-  const h1Candles = await fetchCandles(H1, 100);
-  let h1Dir = null, h1OpenAtEntry = null;
-  if (h1Candles && h1Candles.length >= 52) {
-    const h1Closes = h1Candles.map(c => parseFloat(c.close)), h1ci = h1Candles.length - 2;
-    const smaFast1h = sma(h1Closes, 2), smaSlow1h = sma(h1Closes, 50);
-    if (smaFast1h[h1ci] != null && smaSlow1h[h1ci] != null) {
-      if      (smaFast1h[h1ci] > smaSlow1h[h1ci]) h1Dir = "BUY";
-      else if (smaFast1h[h1ci] < smaSlow1h[h1ci]) h1Dir = "SELL";
-    }
-    h1OpenAtEntry = parseFloat(h1Candles[h1Candles.length - 1].open);
-  }
-
-  const m15Candles = await fetchCandles(M15, 100);
-  let m15Dir = null;
-  if (m15Candles && m15Candles.length >= 52) {
-    const m15Closes = m15Candles.map(c => parseFloat(c.close)), m15ci = m15Candles.length - 2;
-    const smaFast15 = sma(m15Closes, 2), smaSlow15 = sma(m15Closes, 50);
-    if (smaFast15[m15ci] != null && smaSlow15[m15ci] != null) {
-      if      (smaFast15[m15ci] > smaSlow15[m15ci]) m15Dir = "BUY";
-      else if (smaFast15[m15ci] < smaSlow15[m15ci]) m15Dir = "SELL";
-    }
-  }
-
-  let m5Dir = null;
-  if (smaFast5[i] != null && smaSlow5[i] != null) {
-    if      (smaFast5[i] > smaSlow5[i]) m5Dir = "BUY";
-    else if (smaFast5[i] < smaSlow5[i]) m5Dir = "SELL";
-  }
-
-  dbg(`H1 dir: ${h1Dir} | M15 dir: ${m15Dir} | M5 dir: ${m5Dir}`);
-
-  const aligned = h1Dir && m15Dir && m5Dir && h1Dir === m15Dir && m15Dir === m5Dir;
-  if (aligned) {
-    if (state.waitingFor !== h1Dir) { state.waitingFor = h1Dir; state.setupEpoch = currentCandleEpoch; console.log(`Alignment detected: ${h1Dir} — setup clock started.`); }
-    else { console.log(`Alignment continues: ${h1Dir} — setup clock preserved.`); }
-  } else {
-    if (state.waitingFor) console.log(`Alignment broken (H1:${h1Dir} M15:${m15Dir} M5:${m5Dir}) — clearing setup.`);
-    state.waitingFor = null; state.setupEpoch = null;
-  }
-  if (state.waitingFor && state.setupEpoch && (currentCandleEpoch - state.setupEpoch) > (SETUP_EXPIRY_BARS * M5)) { console.log("Setup expired — clearing."); state.waitingFor = null; state.setu[...]
