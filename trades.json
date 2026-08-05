@@ -222,5 +222,25 @@
     "openTime": "2026-08-05 09:00:00",
     "closeTime": "2026-08-05 09:20:24",
     "result": "LOSS"
+  },
+  {
+    "id": "R_10-2026-08-05T12:55:00.000Z",
+    "contractId": 1516756219,
+    "repo": "Test Bot (V10 Live)",
+    "symbol": "R_10",
+    "direction": "SELL",
+    "entry": 4899.117,
+    "sl": 4912.951,
+    "tp1": 4878.366,
+    "tp2": 4871.4490000000005,
+    "tp3": 4857.615000000001,
+    "h1OpenAtEntry": 4899.097,
+    "tp1Reached": false,
+    "macdEarlyFlipEpoch": null,
+    "peakProfit": null,
+    "rr": 1.5,
+    "openTime": "2026-08-05 12:55:00",
+    "closeTime": null,
+    "result": null
   }
 ]
