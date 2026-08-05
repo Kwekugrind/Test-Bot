@@ -131,7 +131,11 @@ try { const s = JSON.parse(fs.readFileSync("state.json")); state = { ...state, .
     return;
   }
   if (TRIGGER_SOURCE !== "cronjob") { console.log("Not a cronjob trigger — exiting."); return; }
-  await runScanMode();
+  if (typeof runScanMode === 'function') {
+    await runScanMode();
+  } else {
+    console.error('runScanMode is not defined — aborting scan.');
+  }
 })();
 
 function openWS() {
