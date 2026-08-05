@@ -250,15 +250,29 @@ function calcUnrealizedPnL(trade, currentPrice) {
   return 0;
 }
 
+// Identifies true Williams 5-bar fractal pivots across all candles,
+// then picks the highest of the 6 most recent fractal highs and the
+// lowest of the 6 most recent fractal lows as breakout reference levels.
 function getFractals(candles) {
-  const lookback = Math.min(6, candles.length - 2);
-  const slice = candles.slice(-lookback - 2, -2);
-  let significantHigh = null, significantLow = null;
-  for (const c of slice) {
-    const h = parseFloat(c.high), l = parseFloat(c.low);
-    if (significantHigh === null || h > significantHigh) significantHigh = h;
-    if (significantLow  === null || l < significantLow)  significantLow  = l;
+  const fractalHighs = [];
+  const fractalLows  = [];
+  // i needs 2 confirmed bars to its right, so stop at length - 3
+  for (let i = 2; i < candles.length - 2; i++) {
+    const h = parseFloat(candles[i].high);
+    const l = parseFloat(candles[i].low);
+    if (
+      h > parseFloat(candles[i-1].high) && h > parseFloat(candles[i-2].high) &&
+      h > parseFloat(candles[i+1].high) && h > parseFloat(candles[i+2].high)
+    ) fractalHighs.push(h);
+    if (
+      l < parseFloat(candles[i-1].low) && l < parseFloat(candles[i-2].low) &&
+      l < parseFloat(candles[i+1].low) && l < parseFloat(candles[i+2].low)
+    ) fractalLows.push(l);
   }
+  const recentHighs = fractalHighs.slice(-6);
+  const recentLows  = fractalLows.slice(-6);
+  const significantHigh = recentHighs.length ? Math.max(...recentHighs) : null;
+  const significantLow  = recentLows.length  ? Math.min(...recentLows)  : null;
   return { significantHigh, significantLow };
 }
 
