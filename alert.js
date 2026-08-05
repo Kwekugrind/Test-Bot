@@ -9,9 +9,9 @@ const REPO_LABEL         = "Test Bot (V10 Live)";
 const MULTIPLIER         = 400;
 const STAKE_USD          = 10;
 const RISK_REWARD        = 1.5;
-const SAFETY_TP_USD      = 15;   // hard dollar ceiling — close immediately (also Deriv take_profit)
-const TRAIL_ACTIVATE_USD = 5;    // start high-water-mark trailing at this profit
-const TRAIL_DROP_USD     = 3;    // exit if profit drops this much from peak
+const SAFETY_TP_USD      = 15;
+const TRAIL_ACTIVATE_USD = 5;
+const TRAIL_DROP_USD     = 3;
 const ATR_PERIOD         = 14;
 const SETUP_EXPIRY_BARS  = 35;
 const MARKET_DATA_APP_ID = "1089";
@@ -250,29 +250,28 @@ function calcUnrealizedPnL(trade, currentPrice) {
   return 0;
 }
 
-// Identifies true Williams 5-bar fractal pivots across all candles,
-// then picks the highest of the 6 most recent fractal highs and the
-// lowest of the 6 most recent fractal lows as breakout reference levels.
+// Collects all Williams 5-bar fractal pivots (highs and lows) into one
+// chronological list, takes the 6 most recent across both types, then
+// extracts the highest high and lowest low from those 6.
 function getFractals(candles) {
-  const fractalHighs = [];
-  const fractalLows  = [];
-  // i needs 2 confirmed bars to its right, so stop at length - 3
+  const pivots = [];
   for (let i = 2; i < candles.length - 2; i++) {
     const h = parseFloat(candles[i].high);
     const l = parseFloat(candles[i].low);
     if (
       h > parseFloat(candles[i-1].high) && h > parseFloat(candles[i-2].high) &&
       h > parseFloat(candles[i+1].high) && h > parseFloat(candles[i+2].high)
-    ) fractalHighs.push(h);
+    ) pivots.push({ type: "high", value: h });
     if (
       l < parseFloat(candles[i-1].low) && l < parseFloat(candles[i-2].low) &&
       l < parseFloat(candles[i+1].low) && l < parseFloat(candles[i+2].low)
-    ) fractalLows.push(l);
+    ) pivots.push({ type: "low", value: l });
   }
-  const recentHighs = fractalHighs.slice(-6);
-  const recentLows  = fractalLows.slice(-6);
-  const significantHigh = recentHighs.length ? Math.max(...recentHighs) : null;
-  const significantLow  = recentLows.length  ? Math.min(...recentLows)  : null;
+  const recent = pivots.slice(-6);
+  const highs = recent.filter(p => p.type === "high").map(p => p.value);
+  const lows  = recent.filter(p => p.type === "low").map(p => p.value);
+  const significantHigh = highs.length ? Math.max(...highs) : null;
+  const significantLow  = lows.length  ? Math.min(...lows)  : null;
   return { significantHigh, significantLow };
 }
 
