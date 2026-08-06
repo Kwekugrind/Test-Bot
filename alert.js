@@ -122,8 +122,18 @@ async function executeManualClose(result, reason) {
   }
 }
 
-let state = { waitingFor: null, setupEpoch: null, lastProcessedEpoch: null, lastTgUpdateId: 0 };
-try { const s = JSON.parse(fs.readFileSync("state.json")); state = { ...state, ...s, waitingFor: s.waitingFor ?? null, setupEpoch: s.setupEpoch ?? null }; } catch {}
+let state = { waitingFor: null, setupEpoch: null, lastProcessedEpoch: null, lastTgUpdateId: 0, h1TrendDir: null, firstTradeTaken: false };
+try { 
+  const s = JSON.parse(fs.readFileSync("state.json")); 
+  state = { 
+    ...state, 
+    ...s, 
+    waitingFor: s.waitingFor ?? null, 
+    setupEpoch: s.setupEpoch ?? null,
+    h1TrendDir: s.h1TrendDir ?? null,
+    firstTradeTaken: s.firstTradeTaken ?? false
+  }; 
+} catch {}
 
 
 // ==================== DERIV API & PROXY HELPERS ====================
@@ -182,6 +192,7 @@ async function getDerivAccountId() {
   if (!res.ok) throw new Error(`getAccounts failed: ${JSON.stringify(json.errors || json)}`);
   const accounts = json.data;
   if (!accounts || accounts.length === 0) throw new Error("No Deriv accounts found");
+  // LIVE ACCOUNT SELECTOR
   const account = accounts.find(a => a.account_type !== "demo") || accounts[0];
   console.log(`   Account ID: ${account.account_id} (${account.account_type})`);
   return account.account_id;
@@ -526,20 +537,48 @@ async function runScanMode() {
 
   dbg(`H1 dir: ${h1Dir} | M15 dir: ${m15Dir} | M5 dir: ${m5Dir}`);
 
-  // Live State Alignment Cascade
-  const aligned = h1Dir && m15Dir && m5Dir && h1Dir === m15Dir && m15Dir === m5Dir;
-  if (aligned) {
-    if (state.waitingFor !== h1Dir) {
-      state.waitingFor = h1Dir;
-      state.setupEpoch = currentCandleEpoch;
-      console.log(`Alignment detected: ${h1Dir} — setup clock started.`);
-    } else {
-      console.log(`Alignment continues: ${h1Dir} — setup clock preserved.`);
-    }
-  } else {
-    if (state.waitingFor) console.log(`Alignment broken (H1:${h1Dir} M15:${m15Dir} M5:${m5Dir}) — clearing setup.`);
+  // ── Track H1 Trend Changes & First-Trade Status ────────────────────────
+  if (state.h1TrendDir !== h1Dir) {
+    state.h1TrendDir = h1Dir;
+    state.firstTradeTaken = false; // Reset for the new H1 trend
     state.waitingFor = null;
     state.setupEpoch = null;
+    console.log(`New H1 trend detected (${h1Dir}) — first-trade mode activated.`);
+  }
+
+  // ── Timeframe Alignment & Arming Logic (First Trade vs Subsequent Trades Rule) ──
+  const h1m15Aligned = h1Dir && m15Dir && h1Dir === m15Dir;
+
+  if (h1m15Aligned) {
+    let m5Ready = false;
+
+    if (!state.firstTradeTaken) {
+      // RULE 1: FIRST TRADE — State-based M5 check (prevents missing initial move)
+      m5Ready = (m5Dir === h1Dir);
+    } else {
+      // RULE 2: SUBSEQUENT TRADES — Requires a FRESH M5 crossover event
+      const m5FreshBuy  = (smaFast5[i-1] <= smaSlow5[i-1]) && (smaFast5[i] > smaSlow5[i]);
+      const m5FreshSell = (smaFast5[i-1] >= smaSlow5[i-1]) && (smaFast5[i] < smaSlow5[i]);
+      
+      if (h1Dir === "BUY" && m5FreshBuy) m5Ready = true;
+      if (h1Dir === "SELL" && m5FreshSell) m5Ready = true;
+    }
+
+    if (m5Ready) {
+      if (state.waitingFor !== h1Dir) {
+        state.waitingFor = h1Dir;
+        state.setupEpoch = currentCandleEpoch;
+        console.log(`Setup armed for ${h1Dir} (First Trade: ${!state.firstTradeTaken}) — setup clock started.`);
+      } else {
+        console.log(`Setup continues for ${h1Dir} — setup clock preserved.`);
+      }
+    }
+  } else {
+    if (state.waitingFor) {
+      console.log(`Alignment broken (H1:${h1Dir} M15:${m15Dir}) — clearing setup.`);
+      state.waitingFor = null;
+      state.setupEpoch = null;
+    }
   }
 
   // Setup Expiry Check
@@ -627,6 +666,7 @@ async function runScanMode() {
       console.error("⚠️ Live execution warning:", execErr.message); 
     }
 
+    state.firstTradeTaken = true; // Mark first trade complete for this trend
     state.waitingFor = null;
     state.setupEpoch = null;
   }
