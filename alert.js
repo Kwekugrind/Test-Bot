@@ -2,9 +2,9 @@ import WebSocket from "ws";
 import fetch from "node-fetch";
 import fs from "fs";
 
-// ==================== REPOSITORY CONFIGURATION (TEST BOT V10 LIVE) ====================
-const SYMBOL               = "R_10";
-const TRADING_SYMBOL       = "R_10";
+// ==================== REPOSITORY CONFIGURATION ====================
+const SYMBOL               = "R_10"; // Change per repo (R_50, R_75, 1HZ75V, etc.)
+const TRADING_SYMBOL       = SYMBOL;
 const SYMBOL_NAME          = "Volatility 10 Index";
 const REPO_LABEL           = "Test Bot (V10 Live)";
 const MULTIPLIER           = 400;
@@ -534,6 +534,18 @@ async function runScanMode() {
   const h1m15Aligned = h1Dir && m15Dir && h1Dir === m15Dir;
 
   if (h1m15Aligned) {
+    // Check for M5 counter-cross (M5 crossing AGAINST the H1/M15 trend direction) -> Resets waiting period & restarts 35-bar timer
+    const m5CounterCrossBuy  = (h1Dir === "SELL") && (smaFast5[i-1] <= smaSlow5[i-1]) && (smaFast5[i] > smaSlow5[i]);
+    const m5CounterCrossSell = (h1Dir === "BUY")  && (smaFast5[i-1] >= smaSlow5[i-1]) && (smaFast5[i] < smaSlow5[i]);
+
+    if (m5CounterCrossBuy || m5CounterCrossSell) {
+      if (state.waitingFor) {
+        console.log(`M5 counter-cross detected against ${h1Dir} trend — resetting waiting period.`);
+        state.waitingFor = null;
+        state.setupEpoch = null;
+      }
+    }
+
     let m5Ready = false;
 
     if (!state.firstTradeTaken) {
@@ -552,9 +564,7 @@ async function runScanMode() {
       if (state.waitingFor !== h1Dir) {
         state.waitingFor = h1Dir;
         state.setupEpoch = currentCandleEpoch;
-        console.log(`Setup armed for ${h1Dir} (First Trade: ${!state.firstTradeTaken}) — setup clock started.`);
-      } else {
-        console.log(`Setup continues for ${h1Dir} — setup clock preserved.`);
+        console.log(`Setup armed/re-armed for ${h1Dir} (First Trade: ${!state.firstTradeTaken}) — 35-bar timer started/restarted.`);
       }
     }
   } else {
@@ -603,11 +613,11 @@ async function runScanMode() {
   let signalTriggered = false, direction = "", entry, sl, risk, tp1, tp2, tp3;
   if (buySignal) {
     signalTriggered = true; direction = "BUY"; entry = closes[i];
-    sl = entry - (atr14 * 2); // Clean ATR-based hard stop below entry
+    sl = entry - (atr14 * 1.5); // Clean ATR-based hard stop below entry
     risk = entry - sl; tp1 = entry + risk * RISK_REWARD; tp2 = entry + risk * 2; tp3 = entry + risk * 3;
   } else if (sellSignal) {
     signalTriggered = true; direction = "SELL"; entry = closes[i];
-    sl = entry + (atr14 * 2); // Clean ATR-based hard stop above entry
+    sl = entry + (atr14 * 1.5); // Clean ATR-based hard stop above entry
     risk = sl - entry; tp1 = entry - risk * RISK_REWARD; tp2 = entry - risk * 2; tp3 = entry - risk * 3;
   }
 
