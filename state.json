@@ -4,5 +4,7 @@
   "lastProcessedEpoch": 1786135800,
   "lastTgUpdateId": 0,
   "h1TrendEpoch": 1786129200,
+  "phaseATriggeredEpoch": null,
+  "activeEntryType": null,
   "trendTradeCount": 1
 }
