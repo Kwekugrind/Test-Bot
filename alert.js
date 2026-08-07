@@ -16,7 +16,7 @@ const TRAIL_DROP_USD       = 3;    // Exit if profit drops this much from peak
 const BREAKEVEN_ACTIVATE_USD = 3.00; // Move SL to entry once profit hits this amount
 const COMMISSION_USD       = 0.16; // $0.16 for Live trades | $0.15 for Demo trades
 const ATR_PERIOD           = 14;
-const ATR_MULTIPLIER       = 2.0;  // Updated breathing room for Stop Loss
+const ATR_MULTIPLIER       = 2.0;  // Stop loss breathing room
 const FRACTAL_LOOKBACK     = 6;
 const SETUP_EXPIRY_BARS    = 35;
 const MARKET_DATA_APP_ID   = "1089";
@@ -281,7 +281,7 @@ async function closeContract(contractId) {
 }
 
 
-// ==================== TECHNICAL ANALYSIS & INDICATORS ====================
+// ==================== TECHNICAL ANALYSIS, PIVOTS & FIBONACCI ====================
 
 function sma(data, period) {
   return data.map((_, i) => {
@@ -318,6 +318,62 @@ function calcUnrealizedPnL(trade, currentPrice) {
   return rawPnl - COMMISSION_USD;
 }
 
+// Circuit Breaker: Checks if the last 3 trades resulted in consecutive losses
+function checkCircuitBreaker(trades) {
+  const closed = trades.filter(t => t.result);
+  if (closed.length < 3) return false;
+  let consecutiveLosses = 0;
+  for (let i = closed.length - 1; i >= 0; i--) {
+    if (closed[i].result === "LOSS") {
+      consecutiveLosses++;
+    } else {
+      break;
+    }
+  }
+  return consecutiveLosses >= 3;
+}
+
+function getDailyPivots(d1Candles) {
+  if (!d1Candles || d1Candles.length < 2) return null;
+  const prevDay = d1Candles[d1Candles.length - 2];
+  const high = parseFloat(prevDay.high);
+  const low = parseFloat(prevDay.low);
+  const close = parseFloat(prevDay.close);
+  const pivot = (high + low + close) / 3;
+  const r1 = (2 * pivot) - low;
+  const s1 = (2 * pivot) - high;
+  const r2 = pivot + (high - low);
+  const s2 = pivot - (high - low);
+  return { pivot, r1, s1, r2, s2 };
+}
+
+function getFibLevels(candles, direction) {
+  const lookbackCandles = candles.slice(-30);
+  let swingHigh = -Infinity;
+  let swingLow = Infinity;
+  for (const c of lookbackCandles) {
+    const h = parseFloat(c.high);
+    const l = parseFloat(c.low);
+    if (h > swingHigh) swingHigh = h;
+    if (l < swingLow) swingLow = l;
+  }
+  const diff = swingHigh - swingLow;
+  if (diff <= 0) return null;
+  if (direction === "BUY") {
+    return {
+      fib382: swingHigh - (diff * 0.382),
+      fib500: swingHigh - (diff * 0.500),
+      fib618: swingHigh - (diff * 0.618)
+    };
+  } else {
+    return {
+      fib382: swingLow + (diff * 0.382),
+      fib500: swingLow + (diff * 0.500),
+      fib618: swingLow + (diff * 0.618)
+    };
+  }
+}
+
 async function fetchH4Candle() {
   try {
     const candles = await fetchCandles(H4, 10);
@@ -333,7 +389,7 @@ async function getD1Context() {
     const c = candles[candles.length - 2];
     const open = parseFloat(c.open), close = parseFloat(c.close);
     const change = close - open, changePct = (change / open) * 100;
-    return { direction: close > open ? "🟢 BULLISH" : "🔴 BEARISH", open, close, change, changePct };
+    return { direction: close > open ? "🟢 BULLISH" : "🔴 BEARISH", open, close, change, changePct, candles };
   } catch (e) { console.error("getD1Context error:", e.message); return null; }
 }
 
@@ -355,6 +411,13 @@ async function runScanMode() {
 
   let trades = [];
   try { trades = JSON.parse(fs.readFileSync("trades.json")); } catch {}
+
+  // ── Circuit Breaker Check (3 Consecutive Losses) ─────────────────────
+  if (checkCircuitBreaker(trades)) {
+    console.log("🛑 Circuit Breaker Active: 3 consecutive losses detected. Pausing trading for capital protection.");
+    await sendTelegram(`🛑 *${REPO_LABEL} — Circuit Breaker Triggered*\n\n3 consecutive losses detected. Trading is automatically paused for capital protection.`);
+    return;
+  }
 
   // ── Open Position Management ──────────────────────────────────────────
   const openTrade = trades.find(t => !t.result);
@@ -382,14 +445,14 @@ async function runScanMode() {
       await sendTelegram(`${icon} *${REPO_LABEL} — Trade ${result}*\n\nDirection: ${openTrade.direction} (${contractType})\nSymbol:    ${SYMBOL_NAME}\n\n📍 Entry:  ${openTrade.entry.toFixed(4)}\n🏁 Exit:   ${currentPrice.toFixed(4)}\n🛑 SL:     ${openTrade.sl.toFixed(4)}  ($${slDollars} hard)\n🎯 TP1:    ${openTrade.tp1.toFixed(4)}  ($${tpDollars} soft)  ${tp1Status}\n\n💵 P&L: ${pnlStr} (Net of comm.)\nReason: ${exitReason}\nDuration: ${formatDuration(durationMs)}\n\nOpened:  ${openTrade.openTime}\nClosed:  ${openTrade.closeTime}\n` + (openTrade.contractId ? `Contract: \`${openTrade.contractId}\`` : ""));
     };
 
-    // BREAKEVEN PROTECTION: Move SL to entry once profit hits $3.00 (before TP1)
+    // BREAKEVEN PROTECTION: Arm once profit hits $3.00
     if (!openTrade.tp1Reached && !openTrade.breakevenSet && pnl >= BREAKEVEN_ACTIVATE_USD) {
       openTrade.breakevenSet = true;
       fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
       await sendTelegram(`🛡️ *${REPO_LABEL} — Breakeven Armed*\nProfit reached $${BREAKEVEN_ACTIVATE_USD.toFixed(2)}. Price floor locked at entry (${openTrade.entry.toFixed(4)}).`);
     }
 
-    // 2. BREAKEVEN PRICE TRIGGER: If armed and price reverses back to entry, close immediately
+    // BREAKEVEN PRICE TRIGGER: Close immediately if price reverses to entry
     const breakevenHit = openTrade.breakevenSet && !openTrade.tp1Reached && (
       (openTrade.direction === "BUY" && currentPrice <= openTrade.entry) ||
       (openTrade.direction === "SELL" && currentPrice >= openTrade.entry)
@@ -402,7 +465,6 @@ async function runScanMode() {
 
     // 1. Hard SL Price Check
     const slBreached = openTrade.direction === "BUY" ? currentPrice <= openTrade.sl : currentPrice >= openTrade.sl;
-    dbg(`slBreached: ${slBreached}, tp1Reached: ${openTrade.tp1Reached}, peakProfit: ${openTrade.peakProfit}`);
     if (slBreached) { 
       await closeWith("LOSS", `Hard SL hit — price ${currentPrice.toFixed(4)} breached SL ${openTrade.sl.toFixed(4)}`); 
       return; 
@@ -414,7 +476,7 @@ async function runScanMode() {
       return; 
     }
 
-    // 3. TP1 Price Level (Soft trigger switching exit mode)
+    // 3. TP1 Price Level
     if (!openTrade.tp1Reached) {
       const tp1Hit = openTrade.direction === "BUY" ? currentPrice >= openTrade.tp1 : currentPrice <= openTrade.tp1;
       if (tp1Hit) {
@@ -437,8 +499,6 @@ async function runScanMode() {
         return;
       }
     }
-
-    // (Pre-TP1 M5 SMA Reversal Exit removed per Option A)
 
     // 6. Post-TP1 Exit: MACD(8,100) Trailing Exit
     if (openTrade.tp1Reached) {
@@ -470,11 +530,11 @@ async function runScanMode() {
     return;
   }
 
-  // ── Signal Scan (No Fractals, Option 1 Early Momentum Trigger) ─────────
+  // ── Signal Scan (Smart Fibonacci Retracement + Daily Pivots Pullback Entry) ──
   const candles = await fetchCandles(M5, 120);
   if (!candles || candles.length < 60) { console.log("Not enough M5 candles."); return; }
 
-  const i = candles.length - 2; // Last closed candle
+  const i = candles.length - 2; 
   const currentCandleEpoch = candles[i].epoch;
   const closes = candles.map(c => parseFloat(c.close));
 
@@ -490,9 +550,9 @@ async function runScanMode() {
   const smaFast5 = sma(closes, 2), smaSlow5 = sma(closes, 50);
   const atr14 = calculateATR(candles, ATR_PERIOD);
 
-  // Evaluate H1 Trend Direction & Fresh Crossover
+  // Evaluate H1 & M15 Trend Direction
   const h1Candles = await fetchCandles(H1, 100);
-  let h1Dir = null, h1OpenAtEntry = null, h1FreshCross = false;
+  let h1Dir = null, h1FreshCross = false;
   if (h1Candles && h1Candles.length >= 52) {
     const h1Closes = h1Candles.map(c => parseFloat(c.close)), h1ci = h1Candles.length - 2;
     const smaFast1h = sma(h1Closes, 2), smaSlow1h = sma(h1Closes, 50);
@@ -504,10 +564,8 @@ async function runScanMode() {
       const crossedDown = (smaFast1h[h1ci-1] >= smaSlow1h[h1ci-1]) && (smaFast1h[h1ci] < smaSlow1h[h1ci]);
       if (crossedUp || crossedDown) h1FreshCross = true;
     }
-    h1OpenAtEntry = parseFloat(h1Candles[h1Candles.length - 1].open);
   }
 
-  // Evaluate M15 Trend Direction
   const m15Candles = await fetchCandles(M15, 100);
   let m15Dir = null;
   if (m15Candles && m15Candles.length >= 52) {
@@ -519,55 +577,44 @@ async function runScanMode() {
     }
   }
 
-  // Evaluate M5 Trend Direction
   let m5Dir = null;
   if (smaFast5[i] != null && smaSlow5[i] != null) {
     if (smaFast5[i] > smaSlow5[i]) m5Dir = "BUY";
     else if (smaFast5[i] < smaSlow5[i]) m5Dir = "SELL";
   }
 
-  dbg(`H1 dir: ${h1Dir} | M15 dir: ${m15Dir} | M5 dir: ${m5Dir}`);
-
-  // ── Track H1 Trend Changes & First-Trade Status (Robust Bootstrap Protection) ──
+  // Track H1 Trend & First-Trade Status
   if (state.h1TrendDir == null) {
     state.h1TrendDir = h1Dir;
-    state.firstTradeTaken = true; // Safe default on boot/reset to prevent mid-trend false triggers
+    state.firstTradeTaken = true; 
   } else if (h1FreshCross && state.h1TrendDir !== h1Dir) {
     state.h1TrendDir = h1Dir;
-    state.firstTradeTaken = false; // Reset for the new H1 trend
+    state.firstTradeTaken = false; 
     state.waitingFor = null;
     state.setupEpoch = null;
-    console.log(`New H1 cross detected (${h1Dir}) — first-trade mode activated.`);
   } else {
     state.h1TrendDir = h1Dir;
   }
 
-  // ── Timeframe Alignment & Arming Logic (First Trade vs Subsequent Trades Rule) ──
   const h1m15Aligned = h1Dir && m15Dir && h1Dir === m15Dir;
 
   if (h1m15Aligned) {
-    // Check for M5 counter-cross (M5 crossing AGAINST the H1/M15 trend direction) -> Resets waiting period & restarts 35-bar timer
     const m5CounterCrossBuy  = (h1Dir === "SELL") && (smaFast5[i-1] <= smaSlow5[i-1]) && (smaFast5[i] > smaSlow5[i]);
     const m5CounterCrossSell = (h1Dir === "BUY")  && (smaFast5[i-1] >= smaSlow5[i-1]) && (smaFast5[i] < smaSlow5[i]);
 
     if (m5CounterCrossBuy || m5CounterCrossSell) {
       if (state.waitingFor) {
-        console.log(`M5 counter-cross detected against ${h1Dir} trend — resetting waiting period.`);
         state.waitingFor = null;
         state.setupEpoch = null;
       }
     }
 
     let m5Ready = false;
-
     if (!state.firstTradeTaken) {
-      // RULE 1: FIRST TRADE — State-based M5 check (prevents missing initial move)
       m5Ready = (m5Dir === h1Dir);
     } else {
-      // RULE 2: SUBSEQUENT TRADES — Requires a FRESH M5 crossover event
       const m5FreshBuy  = (smaFast5[i-1] <= smaSlow5[i-1]) && (smaFast5[i] > smaSlow5[i]);
       const m5FreshSell = (smaFast5[i-1] >= smaSlow5[i-1]) && (smaFast5[i] < smaSlow5[i]);
-      
       if (h1Dir === "BUY" && m5FreshBuy) m5Ready = true;
       if (h1Dir === "SELL" && m5FreshSell) m5Ready = true;
     }
@@ -576,73 +623,71 @@ async function runScanMode() {
       if (state.waitingFor !== h1Dir) {
         state.waitingFor = h1Dir;
         state.setupEpoch = currentCandleEpoch;
-        console.log(`Setup armed/re-armed for ${h1Dir} (First Trade: ${!state.firstTradeTaken}) — 35-bar timer started/restarted.`);
       }
     }
   } else {
     if (state.waitingFor) {
-      console.log(`Alignment broken (H1:${h1Dir} M15:${m15Dir}) — clearing setup.`);
       state.waitingFor = null;
       state.setupEpoch = null;
     }
   }
 
-  // Setup Expiry Check
   if (state.waitingFor && state.setupEpoch && (currentCandleEpoch - state.setupEpoch) > (SETUP_EXPIRY_BARS * M5)) {
-    console.log("Setup expired — clearing.");
     state.waitingFor = null;
     state.setupEpoch = null;
   }
 
-  const candleRange = highs[i] - lows[i];
-  if (candleRange === 0) {
-    state.lastProcessedEpoch = currentCandleEpoch;
-    fs.writeFileSync("state.json", JSON.stringify(state, null, 2));
-    return;
-  }
-
-  const closePosBuy = (closes[i] - lows[i]) / candleRange;
-  const closePosSell = (highs[i] - closes[i]) / candleRange;
-
   const h4Candle = await fetchH4Candle();
-  if (!h4Candle) {
-    console.log("⚠️ H4 unavailable — skipping signal scan.");
-    state.lastProcessedEpoch = currentCandleEpoch;
-    fs.writeFileSync("state.json", JSON.stringify(state, null, 2));
-    return;
-  }
-
+  if (!h4Candle) { state.lastProcessedEpoch = currentCandleEpoch; fs.writeFileSync("state.json", JSON.stringify(state, null, 2)); return; }
   const h4Bullish = parseFloat(h4Candle.close) > parseFloat(h4Candle.open);
   const h4Bearish = parseFloat(h4Candle.close) < parseFloat(h4Candle.open);
-  dbg(`H4 candle — open: ${h4Candle.open}, close: ${h4Candle.close}, bullish: ${h4Bullish}, bearish: ${h4Bearish}`);
-  dbg(`waitingFor: ${state.waitingFor}, setupEpoch: ${state.setupEpoch}, currentCandleEpoch: ${currentCandleEpoch}`);
 
-  // Option 1 Signals (No fractals: triggers immediately on alignment + strong candle close)
-  const buySignal = state.waitingFor === "BUY" && h4Bullish && closePosBuy >= 0.6 && closes[i] > opens[i];
-  const sellSignal = state.waitingFor === "SELL" && h4Bearish && closePosSell >= 0.6 && closes[i] < opens[i];
-  dbg(`buySignal: ${buySignal}, sellSignal: ${sellSignal}`);
+  const d1Ctx = await getD1Context();
+  const pivots = d1Ctx ? getDailyPivots(d1Ctx.candles) : null;
+  const fibs = getFibLevels(candles, state.waitingFor);
+
+  // Smart Pullback Entry Check (Fibonacci & Daily Pivot Confluence)
+  let pullbackBuyValid = false;
+  let pullbackSellValid = false;
+
+  if (state.waitingFor === "BUY" && h4Bullish && closes[i] > opens[i]) {
+    const price = closes[i];
+    const nearPivot = pivots && (Math.abs(price - pivots.s1) <= atr14 || Math.abs(price - pivots.pivot) <= atr14 || Math.abs(price - pivots.s2) <= atr14);
+    const nearFib = fibs && (Math.abs(price - fibs.fib382) <= atr14 || Math.abs(price - fibs.fib500) <= atr14 || Math.abs(price - fibs.fib618) <= atr14);
+    if (nearPivot || nearFib || price <= smaSlow5[i]) {
+      pullbackBuyValid = true;
+    }
+  }
+
+  if (state.waitingFor === "SELL" && h4Bearish && closes[i] < opens[i]) {
+    const price = closes[i];
+    const nearPivot = pivots && (Math.abs(price - pivots.r1) <= atr14 || Math.abs(price - pivots.pivot) <= atr14 || Math.abs(price - pivots.r2) <= atr14);
+    const nearFib = fibs && (Math.abs(price - fibs.fib382) <= atr14 || Math.abs(price - fibs.fib500) <= atr14 || Math.abs(price - fibs.fib618) <= atr14);
+    if (nearPivot || nearFib || price >= smaSlow5[i]) {
+      pullbackSellValid = true;
+    }
+  }
 
   let signalTriggered = false, direction = "", entry, sl, risk, tp1, tp2, tp3;
-  if (buySignal) {
+  if (pullbackBuyValid) {
     signalTriggered = true; direction = "BUY"; entry = closes[i];
-    sl = entry - (atr14 * ATR_MULTIPLIER); // Updated ATR multiplier (2.0) for breathing room
+    sl = entry - (atr14 * ATR_MULTIPLIER);
     risk = entry - sl; tp1 = entry + risk * RISK_REWARD; tp2 = entry + risk * 2; tp3 = entry + risk * 3;
-  } else if (sellSignal) {
+  } else if (pullbackSellValid) {
     signalTriggered = true; direction = "SELL"; entry = closes[i];
-    sl = entry + (atr14 * ATR_MULTIPLIER); // Updated ATR multiplier (2.0) for breathing room
+    sl = entry + (atr14 * ATR_MULTIPLIER);
     risk = sl - entry; tp1 = entry - risk * RISK_REWARD; tp2 = entry - risk * 2; tp3 = entry - risk * 3;
   }
 
   if (signalTriggered) {
     const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
     const tpDollars = parseFloat((slDollars * RISK_REWARD).toFixed(2));
-    const d1 = await getD1Context();
-    const alignment = d1 ? checkAlignment(direction, d1.direction) : "⚠️ D1 data unavailable";
+    const alignment = d1Ctx ? checkAlignment(direction, d1Ctx.direction) : "⚠️ D1 data unavailable";
     const timeFormatted = new Date(currentCandleEpoch * 1000).toISOString().replace("T"," ").substring(0,19);
     const h4Dir = h4Bullish ? "🟢 BULLISH" : "🔴 BEARISH";
 
-    let message = `🚨 *${SYMBOL_NAME.toUpperCase()} CONFIRMED SIGNAL* 🚨\n\nDirection: ${direction}\nRepo: ${REPO_LABEL}\nTimeframe: M5\n\n📍 Entry:  ${entry.toFixed(4)}\n🛑 SL:     ${sl.toFixed(4)}  ($${slDollars} hard)\n🎯 TP1:    ${tp1.toFixed(4)} → trail with MACD(8,100) after this\n🎯 TP2:    ${tp2.toFixed(4)} (reference)\n🎯 TP3:    ${tp3.toFixed(4)} (reference)\n\n💰 Stake: $${STAKE_USD} | Hard SL: $${slDollars} | Soft TP1: $${tpDollars} | Safety: $${SAFETY_TP_USD}\n📊 Risk: ${risk.toFixed(2)} points\n👁️ H4: ${h4Dir} ✅ Direction confirmed\n⚡ Setup: Immediate Momentum Trigger + H1/M15/M5 aligned\n━━━━━━━━━━━━━━━━━━━━\n🌍 *D1 CANDLE STATUS*\n━━━━━━━━━━━━━━━━━━━━\n`;
-    if (d1) message += `Direction: ${d1.direction}\nD1 Open: ${d1.open.toFixed(4)}\nD1 Current: ${d1.close.toFixed(4)}\nMovement: ${d1.change.toFixed(4)} pts (${d1.changePct.toFixed(2)}%)\nAlignment: ${alignment}\n\n`;
+    let message = `🚨 *${SYMBOL_NAME.toUpperCase()} CONFIRMED SIGNAL* 🚨\n\nDirection: ${direction}\nRepo: ${REPO_LABEL}\nTimeframe: M5\n\n📍 Entry:  ${entry.toFixed(4)}\n🛑 SL:     ${sl.toFixed(4)}  ($${slDollars} hard)\n🎯 TP1:    ${tp1.toFixed(4)} → trail with MACD(8,100) after this\n🎯 TP2:    ${tp2.toFixed(4)} (reference)\n🎯 TP3:    ${tp3.toFixed(4)} (reference)\n\n💰 Stake: $${STAKE_USD} | Hard SL: $${slDollars} | Soft TP1: $${tpDollars} | Safety: $${SAFETY_TP_USD}\n📊 Risk: ${risk.toFixed(2)} points\n👁️ H4: ${h4Dir} ✅ Direction confirmed\n⚡ Setup: Smart Fib + Pivot Pullback Entry\n━━━━━━━━━━━━━━━━━━━━\n🌍 *D1 CANDLE STATUS*\n━━━━━━━━━━━━━━━━━━━━\n`;
+    if (d1Ctx) message += `Direction: ${d1Ctx.direction}\nD1 Open: ${d1Ctx.open.toFixed(4)}\nD1 Current: ${d1Ctx.close.toFixed(4)}\nMovement: ${d1Ctx.change.toFixed(4)} pts (${d1Ctx.changePct.toFixed(2)}%)\nAlignment: ${alignment}\n\n`;
     else message += `⚠️ D1 data unavailable\n\n`;
     message += `⏰ Time (UTC): ${timeFormatted}\n\n💡 To close manually: send \`/close win\` or \`/close loss\` in this chat`;
 
@@ -650,7 +695,7 @@ async function runScanMode() {
     
     trades.push({ 
       id: `${SYMBOL}-${isoTime}`, contractId: null, repo: REPO_LABEL, symbol: SYMBOL, 
-      direction, entry, sl, tp1, tp2, tp3, h1OpenAtEntry, tp1Reached: false, 
+      direction, entry, sl, tp1, tp2, tp3, h1OpenAtEntry: null, tp1Reached: false, 
       macdEarlyFlipEpoch: null, peakProfit: null, rr: RISK_REWARD, openTime: timeFormatted, 
       closeTime: null, result: null 
     });
@@ -666,7 +711,7 @@ async function runScanMode() {
       console.error("⚠️ Live execution warning:", execErr.message); 
     }
 
-    state.firstTradeTaken = true; // Mark first trade complete for this trend
+    state.firstTradeTaken = true; 
     state.waitingFor = null;
     state.setupEpoch = null;
   }
