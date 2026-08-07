@@ -603,11 +603,11 @@ async function runScanMode() {
   let signalTriggered = false, direction = "", entry, sl, risk, tp1, tp2, tp3;
   if (buySignal) {
     signalTriggered = true; direction = "BUY"; entry = closes[i];
-    sl = entry - (atr14 * 1.5); // Clean ATR-based hard stop below entry
+    sl = entry - (atr14 * 2); // Clean ATR-based hard stop below entry
     risk = entry - sl; tp1 = entry + risk * RISK_REWARD; tp2 = entry + risk * 2; tp3 = entry + risk * 3;
   } else if (sellSignal) {
     signalTriggered = true; direction = "SELL"; entry = closes[i];
-    sl = entry + (atr14 * 1.5); // Clean ATR-based hard stop above entry
+    sl = entry + (atr14 * 2); // Clean ATR-based hard stop above entry
     risk = sl - entry; tp1 = entry - risk * RISK_REWARD; tp2 = entry - risk * 2; tp3 = entry - risk * 3;
   }
 
