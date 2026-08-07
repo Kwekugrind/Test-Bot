@@ -3,8 +3,8 @@ import fetch from "node-fetch";
 import fs from "fs";
 
 // ==================== REPOSITORY CONFIGURATION ====================
-const SYMBOL             = "R_10";
-const TRADING_SYMBOL     = "R_10";
+const SYMBOL             = "R_10"; // Change per repo (e.g., R_50, R_75, 1HZ75V, etc.)
+const TRADING_SYMBOL     = SYMBOL;
 const SYMBOL_NAME        = "Volatility 10 Index";
 const REPO_LABEL         = "Test Bot (V10 Live)";
 const MULTIPLIER         = 400;
@@ -14,7 +14,6 @@ const SAFETY_TP_USD      = 15; // Hard dollar ceiling — close immediately
 const TRAIL_ACTIVATE_USD = 5;  // Start high-water-mark trailing at this profit
 const TRAIL_DROP_USD     = 3;  // Exit if profit drops this much from peak
 const ATR_PERIOD         = 14;
-const FRACTAL_LOOKBACK   = 6;
 const SETUP_EXPIRY_BARS  = 35;
 const MARKET_DATA_APP_ID = "1089";
 const DERIV_APP_ID       = process.env.DERIV_APP_ID;
@@ -192,7 +191,8 @@ async function getDerivAccountId() {
   if (!res.ok) throw new Error(`getAccounts failed: ${JSON.stringify(json.errors || json)}`);
   const accounts = json.data;
   if (!accounts || accounts.length === 0) throw new Error("No Deriv accounts found");
-  // LIVE ACCOUNT SELECTOR
+  
+  // Use (a => a.account_type !== "demo") for LIVE repos, or (a => a.account_type === "demo") for DEMO repos
   const account = accounts.find(a => a.account_type !== "demo") || accounts[0];
   console.log(`   Account ID: ${account.account_id} (${account.account_type})`);
   return account.account_id;
@@ -299,29 +299,6 @@ function calcUnrealizedPnL(trade, currentPrice) {
   if (trade.direction === "BUY") return (currentPrice - trade.entry) / trade.entry * STAKE_USD * MULTIPLIER;
   if (trade.direction === "SELL") return (trade.entry - currentPrice) / trade.entry * STAKE_USD * MULTIPLIER;
   return 0;
-}
-
-// RESTORED TRUE 5-BAR 6-FRACTAL LOGIC (excluding trigger and live candles)
-function getFractals(candles) {
-  const pool = [];
-  const scanLimit = candles.length - 2; // Excludes trigger candle and forming live candle
-  for (let i = 2; i < scanLimit; i++) {
-    const h = parseFloat(candles[i].high);
-    if (h > parseFloat(candles[i - 1].high) && h > parseFloat(candles[i - 2].high) && h > parseFloat(candles[i + 1].high) && h > parseFloat(candles[i + 2].high)) {
-      pool.push({ type: "high", value: h });
-    }
-    const l = parseFloat(candles[i].low);
-    if (l < parseFloat(candles[i - 1].low) && l < parseFloat(candles[i - 2].low) && l < parseFloat(candles[i + 1].low) && l < parseFloat(candles[i + 2].low)) {
-      pool.push({ type: "low", value: l });
-    }
-  }
-  const recent = pool.slice(-FRACTAL_LOOKBACK);
-  const highs = recent.filter(f => f.type === "high").map(f => f.value);
-  const lows = recent.filter(f => f.type === "low").map(f => f.value);
-  return {
-    significantHigh: highs.length > 0 ? Math.max(...highs) : null,
-    significantLow: lows.length > 0 ? Math.min(...lows) : null,
-  };
 }
 
 async function fetchH4Candle() {
@@ -483,7 +460,7 @@ async function runScanMode() {
     return;
   }
 
-  // ── Signal Scan ────────────────────────────────────────────────────────
+  // ── Signal Scan (No Fractals, Option 1 Early Momentum Trigger) ─────────
   const candles = await fetchCandles(M5, 120);
   if (!candles || candles.length < 60) { console.log("Not enough M5 candles."); return; }
 
@@ -598,13 +575,6 @@ async function runScanMode() {
   const closePosBuy = (closes[i] - lows[i]) / candleRange;
   const closePosSell = (highs[i] - closes[i]) / candleRange;
 
-  const fractals = getFractals(candles);
-  dbg(`Fractals — significantHigh: ${fractals.significantHigh}, significantLow: ${fractals.significantLow}`);
-
-  const fractalBreakUp = fractals.significantHigh !== null && closes[i] > fractals.significantHigh;
-  const fractalBreakDown = fractals.significantLow !== null && closes[i] < fractals.significantLow;
-  dbg(`fractalBreakUp: ${fractalBreakUp}, fractalBreakDown: ${fractalBreakDown}, closePosBuy: ${closePosBuy.toFixed(3)}, closePosSell: ${closePosSell.toFixed(3)}`);
-
   const h4Candle = await fetchH4Candle();
   if (!h4Candle) {
     console.log("⚠️ H4 unavailable — skipping signal scan.");
@@ -618,18 +588,19 @@ async function runScanMode() {
   dbg(`H4 candle — open: ${h4Candle.open}, close: ${h4Candle.close}, bullish: ${h4Bullish}, bearish: ${h4Bearish}`);
   dbg(`waitingFor: ${state.waitingFor}, setupEpoch: ${state.setupEpoch}, currentCandleEpoch: ${currentCandleEpoch}`);
 
-  const buySignal = state.waitingFor === "BUY" && h4Bullish && fractalBreakUp && closePosBuy >= 0.6 && closes[i] > opens[i];
-  const sellSignal = state.waitingFor === "SELL" && h4Bearish && fractalBreakDown && closePosSell >= 0.6 && closes[i] < opens[i];
+  // Option 1 Signals (No fractals: triggers immediately on alignment + strong candle close)
+  const buySignal = state.waitingFor === "BUY" && h4Bullish && closePosBuy >= 0.6 && closes[i] > opens[i];
+  const sellSignal = state.waitingFor === "SELL" && h4Bearish && closePosSell >= 0.6 && closes[i] < opens[i];
   dbg(`buySignal: ${buySignal}, sellSignal: ${sellSignal}`);
 
   let signalTriggered = false, direction = "", entry, sl, risk, tp1, tp2, tp3;
   if (buySignal) {
     signalTriggered = true; direction = "BUY"; entry = closes[i];
-    sl = fractals.significantLow !== null ? Math.min(fractals.significantLow, entry - atr14 * 1.5) : entry - atr14 * 1.5;
+    sl = entry - (atr14 * 1.5); // Clean ATR-based hard stop below entry
     risk = entry - sl; tp1 = entry + risk * RISK_REWARD; tp2 = entry + risk * 2; tp3 = entry + risk * 3;
   } else if (sellSignal) {
     signalTriggered = true; direction = "SELL"; entry = closes[i];
-    sl = fractals.significantHigh !== null ? Math.max(fractals.significantHigh, entry + atr14 * 1.5) : entry + atr14 * 1.5;
+    sl = entry + (atr14 * 1.5); // Clean ATR-based hard stop above entry
     risk = sl - entry; tp1 = entry - risk * RISK_REWARD; tp2 = entry - risk * 2; tp3 = entry - risk * 3;
   }
 
@@ -641,7 +612,7 @@ async function runScanMode() {
     const timeFormatted = new Date(currentCandleEpoch * 1000).toISOString().replace("T"," ").substring(0,19);
     const h4Dir = h4Bullish ? "🟢 BULLISH" : "🔴 BEARISH";
 
-    let message = `🚨 *${SYMBOL_NAME.toUpperCase()} CONFIRMED SIGNAL* 🚨\n\nDirection: ${direction}\nRepo: ${REPO_LABEL}\nTimeframe: M5\n\n📍 Entry:  ${entry.toFixed(4)}\n🛑 SL:     ${sl.toFixed(4)}\n🎯 TP1:    ${tp1.toFixed(4)} → trail with MACD(8,100) after this\n🎯 TP2:    ${tp2.toFixed(4)} (reference)\n🎯 TP3:    ${tp3.toFixed(4)} (reference)\n\n💰 Stake: $${STAKE_USD} | Hard SL: $${slDollars} | Soft TP1: $${tpDollars} | Safety: $${SAFETY_TP_USD}\n📊 Risk: ${risk.toFixed(2)} points\n👁️ H4: ${h4Dir} ✅ Direction confirmed\n⚡ Setup: Fractal break + H1/M15/M5 aligned\n━━━━━━━━━━━━━━━━━━━━\n🌍 *D1 CANDLE STATUS*\n━━━━━━━━━━━━━━━━━━━━\n`;
+    let message = `🚨 *${SYMBOL_NAME.toUpperCase()} CONFIRMED SIGNAL* 🚨\n\nDirection: ${direction}\nRepo: ${REPO_LABEL}\nTimeframe: M5\n\n📍 Entry:  ${entry.toFixed(4)}\n🛑 SL:     ${sl.toFixed(4)}\n🎯 TP1:    ${tp1.toFixed(4)} → trail with MACD(8,100) after this\n🎯 TP2:    ${tp2.toFixed(4)} (reference)\n🎯 TP3:    ${tp3.toFixed(4)} (reference)\n\n💰 Stake: $${STAKE_USD} | Hard SL: $${slDollars} | Soft TP1: $${tpDollars} | Safety: $${SAFETY_TP_USD}\n📊 Risk: ${risk.toFixed(2)} points\n👁️ H4: ${h4Dir} ✅ Direction confirmed\n⚡ Setup: Immediate Momentum Trigger + H1/M15/M5 aligned\n━━━━━━━━━━━━━━━━━━━━\n🌍 *D1 CANDLE STATUS*\n━━━━━━━━━━━━━━━━━━━━\n`;
     if (d1) message += `Direction: ${d1.direction}\nD1 Open: ${d1.open.toFixed(4)}\nD1 Current: ${d1.close.toFixed(4)}\nMovement: ${d1.change.toFixed(4)} pts (${d1.changePct.toFixed(2)}%)\nAlignment: ${alignment}\n\n`;
     else message += `⚠️ D1 data unavailable\n\n`;
     message += `⏰ Time (UTC): ${timeFormatted}\n\n💡 To close manually: send \`/close win\` or \`/close loss\` in this chat`;
