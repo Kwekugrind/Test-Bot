@@ -3,27 +3,29 @@ import fetch from "node-fetch";
 import fs from "fs";
 
 // ==================== REPOSITORY CONFIGURATION ====================
-const SYMBOL             = "R_10"; // Change per repo (e.g., R_50, R_75, 1HZ75V, etc.)
-const TRADING_SYMBOL     = SYMBOL;
-const SYMBOL_NAME        = "Volatility 10 Index";
-const REPO_LABEL         = "Test Bot (V10 Live)";
-const MULTIPLIER         = 400;
-const STAKE_USD          = 10;
-const RISK_REWARD        = 1.5;
-const SAFETY_TP_USD      = 15; // Hard dollar ceiling — close immediately
-const TRAIL_ACTIVATE_USD = 5;  // Start high-water-mark trailing at this profit
-const TRAIL_DROP_USD     = 3;  // Exit if profit drops this much from peak
-const ATR_PERIOD         = 14;
-const SETUP_EXPIRY_BARS  = 35;
-const MARKET_DATA_APP_ID = "1089";
-const DERIV_APP_ID       = process.env.DERIV_APP_ID;
-const TG_TOKEN           = process.env.TG_BOT_TOKEN || process.env.TG_TOKEN;
-const TG_CHAT_ID         = process.env.TG_CHAT_ID;
-const DERIV_TOKEN        = process.env.DERIV_API_TOKEN;
-const PROXY_URL          = process.env.PROXY_URL;
-const PROXY_SECRET       = process.env.PROXY_SECRET;
-const MODE               = process.env.MODE           || "cronjob";
-const TRIGGER_SOURCE     = process.env.TRIGGER_SOURCE || "manual";
+const SYMBOL               = "R_10";
+const TRADING_SYMBOL       = "R_10";
+const SYMBOL_NAME          = "Volatility 10 Index";
+const REPO_LABEL           = "Test Bot (V10 Live)";
+const MULTIPLIER           = 400;
+const STAKE_USD            = 10;
+const RISK_REWARD          = 1.5;
+const SAFETY_TP_USD        = 15;   // Hard dollar ceiling — close immediately
+const TRAIL_ACTIVATE_USD   = 5;    // Start high-water-mark trailing at this profit
+const TRAIL_DROP_USD       = 3;    // Exit if profit drops this much from peak
+const BREAKEVEN_ACTIVATE_USD = 3.00; // Move SL to entry once profit hits this amount
+const ATR_PERIOD           = 14;
+const FRACTAL_LOOKBACK     = 6;
+const SETUP_EXPIRY_BARS    = 35;
+const MARKET_DATA_APP_ID   = "1089";
+const DERIV_APP_ID         = process.env.DERIV_APP_ID;
+const TG_TOKEN             = process.env.TG_BOT_TOKEN || process.env.TG_TOKEN;
+const TG_CHAT_ID           = process.env.TG_CHAT_ID;
+const DERIV_TOKEN          = process.env.DERIV_API_TOKEN;
+const PROXY_URL            = process.env.PROXY_URL;
+const PROXY_SECRET         = process.env.PROXY_SECRET;
+const MODE                 = process.env.MODE           || "cronjob";
+const TRIGGER_SOURCE       = process.env.TRIGGER_SOURCE || "manual";
 
 const M5  = 5  * 60;
 const M15 = 15 * 60;
@@ -191,8 +193,7 @@ async function getDerivAccountId() {
   if (!res.ok) throw new Error(`getAccounts failed: ${JSON.stringify(json.errors || json)}`);
   const accounts = json.data;
   if (!accounts || accounts.length === 0) throw new Error("No Deriv accounts found");
-  
-  // Use (a => a.account_type !== "demo") for LIVE repos, or (a => a.account_type === "demo") for DEMO repos
+  // LIVE ACCOUNT SELECTOR
   const account = accounts.find(a => a.account_type !== "demo") || accounts[0];
   console.log(`   Account ID: ${account.account_id} (${account.account_type})`);
   return account.account_id;
@@ -365,6 +366,14 @@ async function runScanMode() {
       await sendTelegram(`${icon} *${REPO_LABEL} — Trade ${result}*\n\nDirection: ${openTrade.direction} (${contractType})\nSymbol:    ${SYMBOL_NAME}\n\n📍 Entry:  ${openTrade.entry.toFixed(4)}\n🏁 Exit:   ${currentPrice.toFixed(4)}\n🛑 SL:     ${openTrade.sl.toFixed(4)}  ($${slDollars} hard)\n🎯 TP1:    ${openTrade.tp1.toFixed(4)}  ($${tpDollars} soft)  ${tp1Status}\n\n💵 P&L: ${pnlStr}\nReason: ${exitReason}\nDuration: ${formatDuration(durationMs)}\n\nOpened:  ${openTrade.openTime}\nClosed:  ${openTrade.closeTime}\n` + (openTrade.contractId ? `Contract: \`${openTrade.contractId}\`` : ""));
     };
 
+    // BREAKEVEN PROTECTION: Move SL to entry once profit hits $3.00 (before TP1)
+    if (!openTrade.tp1Reached && !openTrade.breakevenSet && pnl >= BREAKEVEN_ACTIVATE_USD) {
+      openTrade.sl = openTrade.entry;
+      openTrade.breakevenSet = true;
+      fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
+      await sendTelegram(`🛡️ *${REPO_LABEL} — Breakeven Protected*\nProfit reached $${BREAKEVEN_ACTIVATE_USD.toFixed(2)}. Stop loss moved to entry (${openTrade.entry.toFixed(4)}).`);
+    }
+
     // 1. Hard SL Price Check
     const slBreached = openTrade.direction === "BUY" ? currentPrice <= openTrade.sl : currentPrice >= openTrade.sl;
     dbg(`slBreached: ${slBreached}, tp1Reached: ${openTrade.tp1Reached}, peakProfit: ${openTrade.peakProfit}`);
@@ -403,22 +412,7 @@ async function runScanMode() {
       }
     }
 
-    // 5. Pre-TP1 Exit: M5 SMA(2)/SMA(50) turns against direction
-    if (!openTrade.tp1Reached) {
-      const m5Early = await fetchCandles(M5, 60);
-      if (m5Early && m5Early.length >= 52) {
-        const cls = m5Early.map(c => parseFloat(c.close)), ci = m5Early.length - 2;
-        const sf = sma(cls, 2), ss = sma(cls, 50);
-        if (sf[ci] != null && ss[ci] != null) {
-          const m5Against = openTrade.direction === "BUY" ? sf[ci] < ss[ci] : sf[ci] > ss[ci];
-          if (m5Against) {
-            const result = pnl >= 0 ? "WIN" : "LOSS";
-            await closeWith(result, `M5 SMA reversal exit (pre-TP1) — ${openTrade.direction} momentum lost`);
-            return;
-          }
-        }
-      }
-    }
+    // (Pre-TP1 M5 SMA Reversal Exit removed per Option A to stop whip-outs on minor pullbacks)
 
     // 6. Post-TP1 Exit: MACD(8,100) Trailing Exit
     if (openTrade.tp1Reached) {
