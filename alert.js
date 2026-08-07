@@ -2,9 +2,9 @@ import WebSocket from "ws";
 import fetch from "node-fetch";
 import fs from "fs";
 
-// ==================== REPOSITORY CONFIGURATION ====================
-const SYMBOL               = "R_10"; // Change per repo (R_50, R_75, 1HZ75V, etc.)
-const TRADING_SYMBOL       = SYMBOL;
+// ==================== REPOSITORY CONFIGURATION (TEST BOT V10 LIVE) ====================
+const SYMBOL               = "R_10";
+const TRADING_SYMBOL       = "R_10";
 const SYMBOL_NAME          = "Volatility 10 Index";
 const REPO_LABEL           = "Test Bot (V10 Live)";
 const MULTIPLIER           = 400;
@@ -16,6 +16,7 @@ const TRAIL_DROP_USD       = 3;    // Exit if profit drops this much from peak
 const BREAKEVEN_ACTIVATE_USD = 3.00; // Move SL to entry once profit hits this amount
 const COMMISSION_USD       = 0.16; // $0.16 for Live trades | $0.15 for Demo trades
 const ATR_PERIOD           = 14;
+const ATR_MULTIPLIER       = 2.0;  // Updated breathing room for Stop Loss
 const FRACTAL_LOOKBACK     = 6;
 const SETUP_EXPIRY_BARS    = 35;
 const MARKET_DATA_APP_ID   = "1089";
@@ -40,7 +41,10 @@ function dbg(...a) { if (DEBUG) console.log("[DBG]", ...a); }
 // ==================== TELEGRAM & UTILS ====================
 
 async function sendTelegram(msg) {
-  if (!TG_TOKEN || !TG_CHAT_ID) return;
+  if (!TG_TOKEN || !TG_CHAT_ID) {
+    console.warn("Telegram not configured: TG_TOKEN or TG_CHAT_ID is missing. Skipping sendTelegram.");
+    return { ok: false, error: "missing_credentials" };
+  }
   const send = async (text, parseMode) => {
     const body = { chat_id: TG_CHAT_ID, text };
     if (parseMode) body.parse_mode = parseMode;
@@ -48,17 +52,25 @@ async function sendTelegram(msg) {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
     });
-    return res.json();
+    let json;
+    try { json = await res.json(); } catch (e) { json = { ok: false, error: `invalid_json_response: ${e.message}` }; }
+    json.__http_status = res.status;
+    return json;
   };
   try {
     const data = await send(msg, "Markdown");
     if (!data.ok) {
-      console.error(`Telegram Markdown rejected (${data.error_code}): ${data.description}`);
+      console.error(`Telegram Markdown rejected (${data.error_code || data.error || 'unknown'}): ${data.description || JSON.stringify(data)}`);
       const plain = msg.replace(/[*_`\[\]]/g, "");
       const retry = await send(plain, "");
-      if (!retry.ok) console.error(`Telegram plain-text retry also failed: ${retry.description}`);
+      if (!retry.ok) {
+        console.error(`Telegram plain-text retry also failed: ${retry.description || JSON.stringify(retry)}`);
+        return { ok: false, error: "telegram_send_failed", detail: retry };
+      }
+      return { ok: true, via: "plain_text", detail: retry };
     }
-  } catch (e) { console.error("Telegram fetch error:", e.message); }
+    return { ok: true, via: "markdown", detail: data };
+  } catch (e) { console.error("Telegram fetch error:", e.message); return { ok: false, error: e.message }; }
 }
 
 function formatDuration(ms) {
@@ -87,7 +99,7 @@ async function checkTelegramCommands() {
     if (!data.ok) return;
     for (const update of data.result) {
       state.lastTgUpdateId = update.update_id;
-      const text = update.message?.text?.trim().toLowerCase();
+      const text = update.message?.text?.trim()?.toLowerCase();
       if (text === "/status") {
         const trades = fs.existsSync("trades.json") ? JSON.parse(fs.readFileSync("trades.json")) : [];
         const open = trades.filter(t => !t.result);
@@ -613,11 +625,11 @@ async function runScanMode() {
   let signalTriggered = false, direction = "", entry, sl, risk, tp1, tp2, tp3;
   if (buySignal) {
     signalTriggered = true; direction = "BUY"; entry = closes[i];
-    sl = entry - (atr14 * 1.5); // Clean ATR-based hard stop below entry
+    sl = entry - (atr14 * ATR_MULTIPLIER); // Updated ATR multiplier (2.0) for breathing room
     risk = entry - sl; tp1 = entry + risk * RISK_REWARD; tp2 = entry + risk * 2; tp3 = entry + risk * 3;
   } else if (sellSignal) {
     signalTriggered = true; direction = "SELL"; entry = closes[i];
-    sl = entry + (atr14 * 1.5); // Clean ATR-based hard stop above entry
+    sl = entry + (atr14 * ATR_MULTIPLIER); // Updated ATR multiplier (2.0) for breathing room
     risk = sl - entry; tp1 = entry - risk * RISK_REWARD; tp2 = entry - risk * 2; tp3 = entry - risk * 3;
   }
 
@@ -629,7 +641,7 @@ async function runScanMode() {
     const timeFormatted = new Date(currentCandleEpoch * 1000).toISOString().replace("T"," ").substring(0,19);
     const h4Dir = h4Bullish ? "🟢 BULLISH" : "🔴 BEARISH";
 
-    let message = `🚨 *${SYMBOL_NAME.toUpperCase()} CONFIRMED SIGNAL* 🚨\n\nDirection: ${direction}\nRepo: ${REPO_LABEL}\nTimeframe: M5\n\n📍 Entry:  ${entry.toFixed(4)}\n🛑 SL:     ${sl.toFixed(4)}\n🎯 TP1:    ${tp1.toFixed(4)} → trail with MACD(8,100) after this\n🎯 TP2:    ${tp2.toFixed(4)} (reference)\n🎯 TP3:    ${tp3.toFixed(4)} (reference)\n\n💰 Stake: $${STAKE_USD} | Hard SL: $${slDollars} | Soft TP1: $${tpDollars} | Safety: $${SAFETY_TP_USD}\n📊 Risk: ${risk.toFixed(2)} points\n👁️ H4: ${h4Dir} ✅ Direction confirmed\n⚡ Setup: Immediate Momentum Trigger + H1/M15/M5 aligned\n━━━━━━━━━━━━━━━━━━━━\n🌍 *D1 CANDLE STATUS*\n━━━━━━━━━━━━━━━━━━━━\n`;
+    let message = `🚨 *${SYMBOL_NAME.toUpperCase()} CONFIRMED SIGNAL* 🚨\n\nDirection: ${direction}\nRepo: ${REPO_LABEL}\nTimeframe: M5\n\n📍 Entry:  ${entry.toFixed(4)}\n🛑 SL:     ${sl.toFixed(4)}  ($${slDollars} hard)\n🎯 TP1:    ${tp1.toFixed(4)} → trail with MACD(8,100) after this\n🎯 TP2:    ${tp2.toFixed(4)} (reference)\n🎯 TP3:    ${tp3.toFixed(4)} (reference)\n\n💰 Stake: $${STAKE_USD} | Hard SL: $${slDollars} | Soft TP1: $${tpDollars} | Safety: $${SAFETY_TP_USD}\n📊 Risk: ${risk.toFixed(2)} points\n👁️ H4: ${h4Dir} ✅ Direction confirmed\n⚡ Setup: Immediate Momentum Trigger + H1/M15/M5 aligned\n━━━━━━━━━━━━━━━━━━━━\n🌍 *D1 CANDLE STATUS*\n━━━━━━━━━━━━━━━━━━━━\n`;
     if (d1) message += `Direction: ${d1.direction}\nD1 Open: ${d1.open.toFixed(4)}\nD1 Current: ${d1.close.toFixed(4)}\nMovement: ${d1.change.toFixed(4)} pts (${d1.changePct.toFixed(2)}%)\nAlignment: ${alignment}\n\n`;
     else message += `⚠️ D1 data unavailable\n\n`;
     message += `⏰ Time (UTC): ${timeFormatted}\n\n💡 To close manually: send \`/close win\` or \`/close loss\` in this chat`;
