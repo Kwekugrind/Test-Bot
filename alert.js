@@ -2,9 +2,9 @@ import WebSocket from "ws";
 import fetch from "node-fetch";
 import fs from "fs";
 
-// ==================== REPOSITORY CONFIGURATION ====================
-const SYMBOL               = "R_10"; // Change per repo (R_50, R_75, 1HZ75V, etc.)
-const TRADING_SYMBOL       = SYMBOL;
+// ==================== REPOSITORY CONFIGURATION (TEST BOT V10 LIVE) ====================
+const SYMBOL               = "R_10";
+const TRADING_SYMBOL       = "R_10";
 const SYMBOL_NAME          = "Volatility 10 Index";
 const REPO_LABEL           = "Test Bot (V10 Live)";
 const MULTIPLIER           = 400;
@@ -198,7 +198,7 @@ async function getDerivAccountId() {
   const accounts = json.data;
   if (!accounts || accounts.length === 0) throw new Error("No Deriv accounts found");
   
-  // LIVE ACCOUNT SELECTOR (Change to a.account_type === "demo" for demo repos)
+  // LIVE ACCOUNT SELECTOR
   const account = accounts.find(a => a.account_type !== "demo") || accounts[0];
   console.log(`   Account ID: ${account.account_id} (${account.account_type})`);
   return account.account_id;
@@ -372,10 +372,20 @@ async function runScanMode() {
 
     // BREAKEVEN PROTECTION: Move SL to entry once profit hits $3.00 (before TP1)
     if (!openTrade.tp1Reached && !openTrade.breakevenSet && pnl >= BREAKEVEN_ACTIVATE_USD) {
-      openTrade.sl = openTrade.entry;
       openTrade.breakevenSet = true;
       fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
-      await sendTelegram(`🛡️ *${REPO_LABEL} — Breakeven Protected*\nProfit reached $${BREAKEVEN_ACTIVATE_USD.toFixed(2)}. Stop loss moved to entry (${openTrade.entry.toFixed(4)}).`);
+      await sendTelegram(`🛡️ *${REPO_LABEL} — Breakeven Armed*\nProfit reached $${BREAKEVEN_ACTIVATE_USD.toFixed(2)}. Price floor locked at entry (${openTrade.entry.toFixed(4)}).`);
+    }
+
+    // 2. BREAKEVEN PRICE TRIGGER: If armed and price reverses back to entry, close immediately
+    const breakevenHit = openTrade.breakevenSet && !openTrade.tp1Reached && (
+      (openTrade.direction === "BUY" && currentPrice <= openTrade.entry) ||
+      (openTrade.direction === "SELL" && currentPrice >= openTrade.entry)
+    );
+
+    if (breakevenHit) {
+      await closeWith("WIN", `Breakeven exit — price reversed back to entry (${openTrade.entry.toFixed(4)}) after hitting profit target`);
+      return;
     }
 
     // 1. Hard SL Price Check
@@ -515,7 +525,7 @@ async function runScanMode() {
     state.firstTradeTaken = false; // Reset for the new H1 trend
     state.waitingFor = null;
     state.setupEpoch = null;
-    console.log(`Fresh H1 cross detected (${h1Dir}) — first-trade mode activated.`);
+    console.log(`New H1 cross detected (${h1Dir}) — first-trade mode activated.`);
   } else {
     state.h1TrendDir = h1Dir;
   }
