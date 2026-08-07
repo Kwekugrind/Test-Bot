@@ -3,7 +3,7 @@ import fetch from "node-fetch";
 import fs from "fs";
 
 // ==================== REPOSITORY CONFIGURATION ====================
-const SYMBOL               = "R_10"; // Change per repo (e.g., R_50, R_75, 1HZ75V, etc.)
+const SYMBOL               = "R_10"; // Change per repo (R_50, R_75, 1HZ75V, etc.)
 const TRADING_SYMBOL       = SYMBOL;
 const SYMBOL_NAME          = "Volatility 10 Index";
 const REPO_LABEL           = "Test Bot (V10 Live)";
@@ -14,7 +14,7 @@ const SAFETY_TP_USD        = 15;   // Hard dollar ceiling — close immediately
 const TRAIL_ACTIVATE_USD   = 5;    // Start high-water-mark trailing at this profit
 const TRAIL_DROP_USD       = 3;    // Exit if profit drops this much from peak
 const BREAKEVEN_ACTIVATE_USD = 3.00; // Move SL to entry once profit hits this amount
-const COMMISSION_USD       = 0.16; // 0.16 for Live trades | 0.15 for Demo trades
+const COMMISSION_USD       = 0.16; // $0.16 for Live trades | $0.15 for Demo trades
 const ATR_PERIOD           = 14;
 const FRACTAL_LOOKBACK     = 6;
 const SETUP_EXPIRY_BARS    = 35;
@@ -117,7 +117,6 @@ async function executeManualClose(result, reason) {
     const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
     const tpDollars = parseFloat((slDollars * RISK_REWARD).toFixed(2));
     
-    // Net PnL including Deriv commission deduction
     const rawPnl = trade.direction === "BUY" ? (currentPrice - trade.entry) / trade.entry * STAKE_USD * MULTIPLIER : (trade.entry - currentPrice) / trade.entry * STAKE_USD * MULTIPLIER;
     const pnl = rawPnl - COMMISSION_USD;
     
@@ -304,7 +303,7 @@ function calculateATR(candles, period) {
 
 function calcUnrealizedPnL(trade, currentPrice) {
   const rawPnl = trade.direction === "BUY" ? (currentPrice - trade.entry) / trade.entry * STAKE_USD * MULTIPLIER : (trade.entry - currentPrice) / trade.entry * STAKE_USD * MULTIPLIER;
-  return rawPnl - COMMISSION_USD; // Factor commission into unrealized PnL too
+  return rawPnl - COMMISSION_USD;
 }
 
 async function fetchH4Candle() {
@@ -469,15 +468,19 @@ async function runScanMode() {
   const smaFast5 = sma(closes, 2), smaSlow5 = sma(closes, 50);
   const atr14 = calculateATR(candles, ATR_PERIOD);
 
-  // Evaluate H1 Trend Direction
+  // Evaluate H1 Trend Direction & Fresh Crossover
   const h1Candles = await fetchCandles(H1, 100);
-  let h1Dir = null, h1OpenAtEntry = null;
+  let h1Dir = null, h1OpenAtEntry = null, h1FreshCross = false;
   if (h1Candles && h1Candles.length >= 52) {
     const h1Closes = h1Candles.map(c => parseFloat(c.close)), h1ci = h1Candles.length - 2;
     const smaFast1h = sma(h1Closes, 2), smaSlow1h = sma(h1Closes, 50);
-    if (smaFast1h[h1ci] != null && smaSlow1h[h1ci] != null) {
+    if (smaFast1h[h1ci] != null && smaSlow1h[h1ci] != null && smaFast1h[h1ci-1] != null && smaSlow1h[h1ci-1] != null) {
       if (smaFast1h[h1ci] > smaSlow1h[h1ci]) h1Dir = "BUY";
       else if (smaFast1h[h1ci] < smaSlow1h[h1ci]) h1Dir = "SELL";
+
+      const crossedUp = (smaFast1h[h1ci-1] <= smaSlow1h[h1ci-1]) && (smaFast1h[h1ci] > smaSlow1h[h1ci]);
+      const crossedDown = (smaFast1h[h1ci-1] >= smaSlow1h[h1ci-1]) && (smaFast1h[h1ci] < smaSlow1h[h1ci]);
+      if (crossedUp || crossedDown) h1FreshCross = true;
     }
     h1OpenAtEntry = parseFloat(h1Candles[h1Candles.length - 1].open);
   }
@@ -503,13 +506,18 @@ async function runScanMode() {
 
   dbg(`H1 dir: ${h1Dir} | M15 dir: ${m15Dir} | M5 dir: ${m5Dir}`);
 
-  // ── Track H1 Trend Changes & First-Trade Status ────────────────────────
-  if (state.h1TrendDir !== h1Dir) {
+  // ── Track H1 Trend Changes & First-Trade Status (Robust Bootstrap Protection) ──
+  if (state.h1TrendDir == null) {
+    state.h1TrendDir = h1Dir;
+    state.firstTradeTaken = true; // Safe default on boot/reset to prevent mid-trend false triggers
+  } else if (h1FreshCross && state.h1TrendDir !== h1Dir) {
     state.h1TrendDir = h1Dir;
     state.firstTradeTaken = false; // Reset for the new H1 trend
     state.waitingFor = null;
     state.setupEpoch = null;
-    console.log(`New H1 trend detected (${h1Dir}) — first-trade mode activated.`);
+    console.log(`Fresh H1 cross detected (${h1Dir}) — first-trade mode activated.`);
+  } else {
+    state.h1TrendDir = h1Dir;
   }
 
   // ── Timeframe Alignment & Arming Logic (First Trade vs Subsequent Trades Rule) ──
