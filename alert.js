@@ -318,21 +318,6 @@ function calcUnrealizedPnL(trade, currentPrice) {
   return rawPnl - COMMISSION_USD;
 }
 
-// Circuit Breaker: Checks if the last 3 trades resulted in consecutive losses
-function checkCircuitBreaker(trades) {
-  const closed = trades.filter(t => t.result);
-  if (closed.length < 3) return false;
-  let consecutiveLosses = 0;
-  for (let i = closed.length - 1; i >= 0; i--) {
-    if (closed[i].result === "LOSS") {
-      consecutiveLosses++;
-    } else {
-      break;
-    }
-  }
-  return consecutiveLosses >= 3;
-}
-
 function getDailyPivots(d1Candles) {
   if (!d1Candles || d1Candles.length < 2) return null;
   const prevDay = d1Candles[d1Candles.length - 2];
@@ -411,13 +396,6 @@ async function runScanMode() {
 
   let trades = [];
   try { trades = JSON.parse(fs.readFileSync("trades.json")); } catch {}
-
-  // ── Circuit Breaker Check (3 Consecutive Losses) ─────────────────────
-  if (checkCircuitBreaker(trades)) {
-    console.log("🛑 Circuit Breaker Active: 3 consecutive losses detected. Pausing trading for capital protection.");
-    await sendTelegram(`🛑 *${REPO_LABEL} — Circuit Breaker Triggered*\n\n3 consecutive losses detected. Trading is automatically paused for capital protection.`);
-    return;
-  }
 
   // ── Open Position Management ──────────────────────────────────────────
   const openTrade = trades.find(t => !t.result);
