@@ -1,9 +1,14 @@
 {
-  "name": "test-bot-v100",
+  "name": "test-bot-v10",
   "version": "3.0.0",
+  "description": "Automated trading bot for Volatility 10 Index",
+  "main": "alert.js",
   "type": "module",
+  "scripts": {
+    "start": "node alert.js"
+  },
   "dependencies": {
     "node-fetch": "^3.3.2",
-    "ws": "^8.17.0"
+    "ws": "^8.16.0"
   }
 }
