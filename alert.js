@@ -3,8 +3,8 @@ import fetch from "node-fetch";
 import fs from "fs";
 
 // ==================== REPOSITORY CONFIGURATION ====================
-const SYMBOL               = "R_10";
-const TRADING_SYMBOL       = "R_10";
+const SYMBOL               = "R_10"; // Change per repo (e.g., R_50, R_75, etc.)
+const TRADING_SYMBOL       = SYMBOL;
 const SYMBOL_NAME          = "Volatility 10 Index";
 const REPO_LABEL           = "Test Bot (V10 Live)";
 const MULTIPLIER           = 400;
@@ -193,7 +193,8 @@ async function getDerivAccountId() {
   if (!res.ok) throw new Error(`getAccounts failed: ${JSON.stringify(json.errors || json)}`);
   const accounts = json.data;
   if (!accounts || accounts.length === 0) throw new Error("No Deriv accounts found");
-  // LIVE ACCOUNT SELECTOR
+  
+  // LIVE ACCOUNT SELECTOR (Change to a.account_type === "demo" for demo repos)
   const account = accounts.find(a => a.account_type !== "demo") || accounts[0];
   console.log(`   Account ID: ${account.account_id} (${account.account_type})`);
   return account.account_id;
@@ -215,7 +216,7 @@ async function executeTrade(direction) {
   
   const accountId = await getDerivAccountId();
   const wsUrl = await getDerivOTP(accountId);
-  const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
+  const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2)); // $5.00 Hard SL
   
   const params = { 
     buy: "1", 
@@ -412,7 +413,7 @@ async function runScanMode() {
       }
     }
 
-    // (Pre-TP1 M5 SMA Reversal Exit removed per Option A to stop whip-outs on minor pullbacks)
+    // (Pre-TP1 M5 SMA Reversal Exit removed per Option A)
 
     // 6. Post-TP1 Exit: MACD(8,100) Trailing Exit
     if (openTrade.tp1Reached) {
@@ -440,15 +441,7 @@ async function runScanMode() {
       }
     }
 
-    // 7. H1-Open Hard Stop Breach
-    if (openTrade.h1OpenAtEntry != null) {
-      const h1Breach = openTrade.direction === "BUY" ? currentPrice < openTrade.h1OpenAtEntry : currentPrice > openTrade.h1OpenAtEntry;
-      if (h1Breach) {
-        const result = pnl >= 0 ? "WIN" : "LOSS";
-        await closeWith(result, `H1 open breach — price ${currentPrice.toFixed(4)} crossed H1 open ${openTrade.h1OpenAtEntry.toFixed(4)}`);
-        return;
-      }
-    }
+    // (H1-Open Hard Stop Breach removed per your request)
 
     console.log("Open trade being managed — skipping scan.");
     return;
