@@ -3,7 +3,7 @@ import fetch from "node-fetch";
 import fs from "fs";
 
 // ==================== REPOSITORY CONFIGURATION ====================
-const SYMBOL               = "R_10"; // Change per repo (e.g., R_50, R_75, etc.)
+const SYMBOL               = "R_10"; // Change per repo (e.g., R_50, R_75, 1HZ75V, etc.)
 const TRADING_SYMBOL       = SYMBOL;
 const SYMBOL_NAME          = "Volatility 10 Index";
 const REPO_LABEL           = "Test Bot (V10 Live)";
@@ -14,6 +14,7 @@ const SAFETY_TP_USD        = 15;   // Hard dollar ceiling — close immediately
 const TRAIL_ACTIVATE_USD   = 5;    // Start high-water-mark trailing at this profit
 const TRAIL_DROP_USD       = 3;    // Exit if profit drops this much from peak
 const BREAKEVEN_ACTIVATE_USD = 3.00; // Move SL to entry once profit hits this amount
+const COMMISSION_USD       = 0.16; // 0.16 for Live trades | 0.15 for Demo trades
 const ATR_PERIOD           = 14;
 const FRACTAL_LOOKBACK     = 6;
 const SETUP_EXPIRY_BARS    = 35;
@@ -115,11 +116,15 @@ async function executeManualClose(result, reason) {
     const durationMs = new Date(trade.closeTime) - new Date(trade.openTime);
     const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
     const tpDollars = parseFloat((slDollars * RISK_REWARD).toFixed(2));
-    const pnl = trade.direction === "BUY" ? (currentPrice - trade.entry) / trade.entry * STAKE_USD * MULTIPLIER : (trade.entry - currentPrice) / trade.entry * STAKE_USD * MULTIPLIER;
+    
+    // Net PnL including Deriv commission deduction
+    const rawPnl = trade.direction === "BUY" ? (currentPrice - trade.entry) / trade.entry * STAKE_USD * MULTIPLIER : (trade.entry - currentPrice) / trade.entry * STAKE_USD * MULTIPLIER;
+    const pnl = rawPnl - COMMISSION_USD;
+    
     const pnlStr = pnl >= 0 ? `+$${pnl.toFixed(2)}` : `-$${Math.abs(pnl).toFixed(2)}`;
     const tp1Status = trade.tp1Reached ? "✅ TP1 hit" : "❌ TP1 not reached";
     
-    await sendTelegram(`${icon} *${REPO_LABEL} — Trade ${result}*\n\nDirection: ${trade.direction} (${contractType})\nSymbol:    ${SYMBOL_NAME}\n\n📍 Entry:  ${trade.entry.toFixed(4)}\n🏁 Exit:   ${currentPrice.toFixed(4)}\n🛑 SL:     ${trade.sl.toFixed(4)}  ($${slDollars} hard)\n🎯 TP1:    ${trade.tp1.toFixed(4)}  ($${tpDollars} soft)  ${tp1Status}\n\n💵 P&L: ${pnlStr}\nReason: ${reason}\nDuration: ${formatDuration(durationMs)}\n\nOpened:  ${trade.openTime}\nClosed:  ${trade.closeTime}\n` + (trade.contractId ? `Contract: \`${trade.contractId}\`` : ""));
+    await sendTelegram(`${icon} *${REPO_LABEL} — Trade ${result}*\n\nDirection: ${trade.direction} (${contractType})\nSymbol:    ${SYMBOL_NAME}\n\n📍 Entry:  ${trade.entry.toFixed(4)}\n🏁 Exit:   ${currentPrice.toFixed(4)}\n🛑 SL:     ${trade.sl.toFixed(4)}  ($${slDollars} hard)\n🎯 TP1:    ${trade.tp1.toFixed(4)}  ($${tpDollars} soft)  ${tp1Status}\n\n💵 P&L: ${pnlStr} (Net of comm.)\nReason: ${reason}\nDuration: ${formatDuration(durationMs)}\n\nOpened:  ${trade.openTime}\nClosed:  ${trade.closeTime}\n` + (trade.contractId ? `Contract: \`${trade.contractId}\`` : ""));
   }
 }
 
@@ -216,7 +221,7 @@ async function executeTrade(direction) {
   
   const accountId = await getDerivAccountId();
   const wsUrl = await getDerivOTP(accountId);
-  const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2)); // $5.00 Hard SL
+  const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
   
   const params = { 
     buy: "1", 
@@ -298,9 +303,8 @@ function calculateATR(candles, period) {
 }
 
 function calcUnrealizedPnL(trade, currentPrice) {
-  if (trade.direction === "BUY") return (currentPrice - trade.entry) / trade.entry * STAKE_USD * MULTIPLIER;
-  if (trade.direction === "SELL") return (trade.entry - currentPrice) / trade.entry * STAKE_USD * MULTIPLIER;
-  return 0;
+  const rawPnl = trade.direction === "BUY" ? (currentPrice - trade.entry) / trade.entry * STAKE_USD * MULTIPLIER : (trade.entry - currentPrice) / trade.entry * STAKE_USD * MULTIPLIER;
+  return rawPnl - COMMISSION_USD; // Factor commission into unrealized PnL too
 }
 
 async function fetchH4Candle() {
@@ -364,7 +368,7 @@ async function runScanMode() {
       const tp1Status = openTrade.tp1Reached ? "✅ TP1 hit" : "❌ TP1 not reached";
       const pnlStr = pnl >= 0 ? `+$${pnl.toFixed(2)}` : `-$${Math.abs(pnl).toFixed(2)}`;
       
-      await sendTelegram(`${icon} *${REPO_LABEL} — Trade ${result}*\n\nDirection: ${openTrade.direction} (${contractType})\nSymbol:    ${SYMBOL_NAME}\n\n📍 Entry:  ${openTrade.entry.toFixed(4)}\n🏁 Exit:   ${currentPrice.toFixed(4)}\n🛑 SL:     ${openTrade.sl.toFixed(4)}  ($${slDollars} hard)\n🎯 TP1:    ${openTrade.tp1.toFixed(4)}  ($${tpDollars} soft)  ${tp1Status}\n\n💵 P&L: ${pnlStr}\nReason: ${exitReason}\nDuration: ${formatDuration(durationMs)}\n\nOpened:  ${openTrade.openTime}\nClosed:  ${openTrade.closeTime}\n` + (openTrade.contractId ? `Contract: \`${openTrade.contractId}\`` : ""));
+      await sendTelegram(`${icon} *${REPO_LABEL} — Trade ${result}*\n\nDirection: ${openTrade.direction} (${contractType})\nSymbol:    ${SYMBOL_NAME}\n\n📍 Entry:  ${openTrade.entry.toFixed(4)}\n🏁 Exit:   ${currentPrice.toFixed(4)}\n🛑 SL:     ${openTrade.sl.toFixed(4)}  ($${slDollars} hard)\n🎯 TP1:    ${openTrade.tp1.toFixed(4)}  ($${tpDollars} soft)  ${tp1Status}\n\n💵 P&L: ${pnlStr} (Net of comm.)\nReason: ${exitReason}\nDuration: ${formatDuration(durationMs)}\n\nOpened:  ${openTrade.openTime}\nClosed:  ${openTrade.closeTime}\n` + (openTrade.contractId ? `Contract: \`${openTrade.contractId}\`` : ""));
     };
 
     // BREAKEVEN PROTECTION: Move SL to entry once profit hits $3.00 (before TP1)
@@ -440,8 +444,6 @@ async function runScanMode() {
         }
       }
     }
-
-    // (H1-Open Hard Stop Breach removed per your request)
 
     console.log("Open trade being managed — skipping scan.");
     return;
