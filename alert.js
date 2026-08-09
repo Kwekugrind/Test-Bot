@@ -37,7 +37,7 @@ const D1 = 24 * 60 * 60;
 const DEBUG = process.env.DEBUG === "true";
 function dbg(...a) { if (DEBUG) console.log("[DBG]", ...a); }
 
-// ==================== TELEGRAM & UTILS ====================
+// ==================== TELEGRAM & UTILS (ROBUST HANDLER) ====================
 async function sendTelegram(msg) {
   if (!TG_TOKEN || !TG_CHAT_ID) {
     console.warn("Telegram not configured: TG_TOKEN or TG_CHAT_ID is missing. Skipping sendTelegram.");
@@ -133,7 +133,7 @@ async function executeManualClose(result, reason) {
   }
 }
 
-let state = { waitingFor: null, setupEpoch: null, lastProcessedEpoch: null, lastTgUpdateId: 0, h1TrendEpoch: null, phaseATriggeredEpoch: null, activeEntryType: null, anticipatedTrend: null, pendingPullback: null, pullbackEpoch: null };
+let state = { waitingFor: null, setupEpoch: null, lastProcessedEpoch: null, lastTgUpdateId: 0, h1TrendEpoch: null, phaseATriggeredEpoch: null, activeEntryType: null, pendingPullback: null, pullbackEpoch: null };
 try {
   const s = JSON.parse(fs.readFileSync("state.json"));
   state = {
@@ -144,7 +144,6 @@ try {
     h1TrendEpoch: s.h1TrendEpoch ?? null,
     phaseATriggeredEpoch: s.phaseATriggeredEpoch ?? null,
     activeEntryType: s.activeEntryType ?? null,
-    anticipatedTrend: s.anticipatedTrend ?? null,
     pendingPullback: s.pendingPullback ?? null,
     pullbackEpoch: s.pullbackEpoch ?? null
   };
@@ -472,7 +471,7 @@ async function runScanMode() {
     return;
   }
 
-  // ── Signal Scan (Anticipatory M15/M5 + Stateful Cross-Confirmation Engine) ──
+  // ── Signal Scan (Strict Phase A Fresh H1 Cross + Stateful Phase B Pullbacks) ──
   const candles = await fetchCandles(M5, 120);
   if (!candles || candles.length < 60) { console.log("Not enough M5 candles."); return; }
   const i = candles.length - 2;
@@ -485,9 +484,10 @@ async function runScanMode() {
   }
 
   const isoTime = new Date(currentCandleEpoch * 1000).toISOString();
+  const atr14 = calculateATR(candles, ATR_PERIOD);
   const cci = calculateCCI(candles, 34);
 
-  // Evaluate H1 Trend Direction
+  // Evaluate H1 Trend Direction & Fresh Cross
   const h1Candles = await fetchCandles(H1, 100);
   let h1Dir = null, h1Epoch = null, h1FreshCross = false;
   if (h1Candles && h1Candles.length >= 52) {
@@ -531,26 +531,19 @@ async function runScanMode() {
     state.h1TrendEpoch = h1Epoch;
   }
 
-  // Anticipatory M15/M5 Lead Check
-  const m15m5Aligned = m15Dir && m5Dir && m15Dir === m5Dir;
-  if (m15m5Aligned) {
-    if (state.anticipatedTrend !== m15Dir) {
-      state.anticipatedTrend = m15Dir;
-    }
-  }
-
   let m5Ready = false;
   let entryType = null;
 
-  // ── PHASE A: ANTICIPATORY / FRESH H1 CONFIRMATION ─────────────────────
-  const h1Confirms = h1Dir && state.anticipatedTrend && h1Dir === state.anticipatedTrend;
-  if ((h1FreshCross || h1Confirms) && state.phaseATriggeredEpoch !== h1Epoch) {
-    if (h1Dir === "BUY" && cci[i] > -114.4) {
-      m5Ready = true;
-      entryType = 'PHASE_A';
-    } else if (h1Dir === "SELL" && cci[i] < 90) {
-      m5Ready = true;
-      entryType = 'PHASE_A';
+  // ── PHASE A: STRICTLY A LIVE FRESH H1 CROSS (First Trade) ────────────
+  if (h1FreshCross && state.phaseATriggeredEpoch !== h1Epoch) {
+    if (m15Dir === h1Dir && m5Dir === h1Dir) {
+      if (h1Dir === "BUY" && cci[i] > -114.4) {
+        m5Ready = true;
+        entryType = 'PHASE_A';
+      } else if (h1Dir === "SELL" && cci[i] < 90) {
+        m5Ready = true;
+        entryType = 'PHASE_A';
+      }
     }
   }
 
@@ -676,7 +669,7 @@ async function runScanMode() {
     const timeFormatted = new Date(currentCandleEpoch * 1000).toISOString().replace("T"," ").substring(0,19);
     const h4Dir = h4Bullish ? "🟢 BULLISH" : "🔴 BEARISH";
 
-    let message = `🚨 *${SYMBOL_NAME.toUpperCase()} CONFIRMED SIGNAL* 🚨\n\nDirection: ${direction}\nRepo: ${REPO_LABEL}\nTimeframe: M5\n\n📍 Entry: ${entry.toFixed(4)}\n🛑 SL: ${sl.toFixed(4)} ($${slDollars} hard)\n🎯 TP1: ${tp1.toFixed(4)} ($7.00 soft) → trail with CCI zero-cross\n🎯 TP2: ${tp2.toFixed(4)} (reference)\n🎯 TP3: ${tp3.toFixed(4)} (reference)\n\n💰 Stake: $${STAKE_USD} | Hard SL: $${slDollars} | TP1: $7.00 | Safety: $${SAFETY_TP_USD}\n📊 Risk: ${risk.toFixed(2)} points\n️ H4: ${h4Dir} ✅ Direction confirmed\n⚡ Setup: Anticipatory M15/M5 + Stateful Cross-Confirmation (${state.activeEntryType})\n━━━━━━━━━━━━━━━━━━━━\n🌍 *D1 CANDLE STATUS*\n━━━━━━━━━━━━━━━━━━━━\n`;
+    let message = `🚨 *${SYMBOL_NAME.toUpperCase()} CONFIRMED SIGNAL* 🚨\n\nDirection: ${direction}\nRepo: ${REPO_LABEL}\nTimeframe: M5\n\n📍 Entry: ${entry.toFixed(4)}\n🛑 SL: ${sl.toFixed(4)} ($${slDollars} hard)\n🎯 TP1: ${tp1.toFixed(4)} ($7.00 soft) → trail with CCI zero-cross\n🎯 TP2: ${tp2.toFixed(4)} (reference)\n🎯 TP3: ${tp3.toFixed(4)} (reference)\n\n💰 Stake: $${STAKE_USD} | Hard SL: $${slDollars} | TP1: $7.00 | Safety: $${SAFETY_TP_USD}\n📊 Risk: ${risk.toFixed(2)} points\n️ H4: ${h4Dir} ✅ Direction confirmed\n⚡ Setup: Strict Fresh H1 Cross + Stateful Cross-Confirmation (${state.activeEntryType})\n━━━━━━━━━━━━━━━━━━━━\n🌍 *D1 CANDLE STATUS*\n━━━━━━━━━━━━━━━━━━━━\n`;
     if (d1Ctx) message += `Direction: ${d1Ctx.direction}\nD1 Open: ${d1Ctx.open.toFixed(4)}\nD1 Current: ${d1Ctx.close.toFixed(4)}\nMovement: ${d1Ctx.change.toFixed(4)} pts (${d1Ctx.changePct.toFixed(2)}%)\nAlignment: ${alignment}\n\n`;
     else message += `⚠️ D1 data unavailable\n\n`;
     message += `⏰ Time (UTC): ${timeFormatted}\n\n💡 To close manually: send \`/close win\` or \`/close loss\` in this chat`;
