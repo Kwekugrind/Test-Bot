@@ -1,1 +1,21 @@
-[]
+[
+  {
+    "id": "R_10-2026-08-09T11:55:00.000Z",
+    "contractId": 1616898079,
+    "repo": "Test Bot (V10 Live)",
+    "symbol": "R_10",
+    "direction": "SELL",
+    "entry": 4811.097,
+    "sl": 4815.256142857143,
+    "tp1": 4804.858285714286,
+    "tp2": 4802.778714285714,
+    "tp3": 4798.619571428571,
+    "h1OpenAtEntry": null,
+    "tp1Reached": false,
+    "peakProfit": null,
+    "rr": 1.5,
+    "openTime": "2026-08-09 11:55:00",
+    "closeTime": null,
+    "result": null
+  }
+]
