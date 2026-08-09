@@ -3,8 +3,8 @@ import fetch from "node-fetch";
 import fs from "fs";
 
 // ==================== REPOSITORY CONFIGURATION (TEST BOT V10 LIVE) ====================
-const SYMBOL = "R_10"; // Change per repo (R_50, R_75, 1HZ75V, etc.)
-const TRADING_SYMBOL = SYMBOL;
+const SYMBOL = "R_10";
+const TRADING_SYMBOL = "R_10";
 const SYMBOL_NAME = "Volatility 10 Index";
 const REPO_LABEL = "Test Bot (V10 Live)";
 const MULTIPLIER = 400;
@@ -133,7 +133,7 @@ async function executeManualClose(result, reason) {
   }
 }
 
-let state = { waitingFor: null, setupEpoch: null, lastProcessedEpoch: null, lastTgUpdateId: 0, h1TrendEpoch: null, phaseATriggeredEpoch: null, activeEntryType: null };
+let state = { waitingFor: null, setupEpoch: null, lastProcessedEpoch: null, lastTgUpdateId: 0, h1TrendEpoch: null, phaseATriggeredEpoch: null, activeEntryType: null, anticipatedTrend: null, pendingPullback: null, pullbackEpoch: null };
 try {
   const s = JSON.parse(fs.readFileSync("state.json"));
   state = {
@@ -143,7 +143,10 @@ try {
     setupEpoch: s.setupEpoch ?? null,
     h1TrendEpoch: s.h1TrendEpoch ?? null,
     phaseATriggeredEpoch: s.phaseATriggeredEpoch ?? null,
-    activeEntryType: s.activeEntryType ?? null
+    activeEntryType: s.activeEntryType ?? null,
+    anticipatedTrend: s.anticipatedTrend ?? null,
+    pendingPullback: s.pendingPullback ?? null,
+    pullbackEpoch: s.pullbackEpoch ?? null
   };
 } catch {}
 
@@ -205,7 +208,7 @@ async function getDerivAccountId() {
   if (!res.ok) throw new Error(`getAccounts failed: ${JSON.stringify(json.errors || json)}`);
   const accounts = json.data;
   if (!accounts || accounts.length === 0) throw new Error("No Deriv accounts found");
-  // LIVE ACCOUNT SELECTOR (use account.account_type === "demo" for demo repos)
+  // LIVE ACCOUNT SELECTOR
   const account = accounts.find(a => a.account_type !== "demo") || accounts[0];
   console.log(` Account ID: ${account.account_id} (${account.account_type})`);
   return account.account_id;
@@ -469,7 +472,7 @@ async function runScanMode() {
     return;
   }
 
-  // ── Signal Scan (Phase A vs Phase B State Machine) ──
+  // ── Signal Scan (Anticipatory M15/M5 + Stateful Cross-Confirmation Engine) ──
   const candles = await fetchCandles(M5, 120);
   if (!candles || candles.length < 60) { console.log("Not enough M5 candles."); return; }
   const i = candles.length - 2;
@@ -484,7 +487,7 @@ async function runScanMode() {
   const isoTime = new Date(currentCandleEpoch * 1000).toISOString();
   const cci = calculateCCI(candles, 34);
 
-  // Evaluate H1 Trend Direction & Fresh Cross
+  // Evaluate H1 Trend Direction
   const h1Candles = await fetchCandles(H1, 100);
   let h1Dir = null, h1Epoch = null, h1FreshCross = false;
   if (h1Candles && h1Candles.length >= 52) {
@@ -528,58 +531,116 @@ async function runScanMode() {
     state.h1TrendEpoch = h1Epoch;
   }
 
-  // Alignment & Arming Logic (Phase A vs Phase B)
-  const h1m15Aligned = h1Dir && m15Dir && h1Dir === m15Dir;
-  if (h1m15Aligned) {
-    let m5Ready = false;
-    let entryType = null;
+  // Anticipatory M15/M5 Lead Check
+  const m15m5Aligned = m15Dir && m5Dir && m15Dir === m5Dir;
+  if (m15m5Aligned) {
+    if (state.anticipatedTrend !== m15Dir) {
+      state.anticipatedTrend = m15Dir;
+    }
+  }
 
-    // ── PHASE A: LIVE FRESH H1 CROSS ─────────────────────────────────────
-    if (h1FreshCross && state.phaseATriggeredEpoch !== h1Epoch) {
-      if (m5Dir === h1Dir) {
-        if (h1Dir === "BUY" && cci[i] > -114.4) {
-          m5Ready = true;
-          entryType = 'PHASE_A';
-        } else if (h1Dir === "SELL" && cci[i] < 90) {
-          m5Ready = true;
-          entryType = 'PHASE_A';
+  let m5Ready = false;
+  let entryType = null;
+
+  // ── PHASE A: ANTICIPATORY / FRESH H1 CONFIRMATION ─────────────────────
+  const h1Confirms = h1Dir && state.anticipatedTrend && h1Dir === state.anticipatedTrend;
+  if ((h1FreshCross || h1Confirms) && state.phaseATriggeredEpoch !== h1Epoch) {
+    if (h1Dir === "BUY" && cci[i] > -114.4) {
+      m5Ready = true;
+      entryType = 'PHASE_A';
+    } else if (h1Dir === "SELL" && cci[i] < 90) {
+      m5Ready = true;
+      entryType = 'PHASE_A';
+    }
+  }
+
+  // ── PHASE B: STATEFUL CROSS-CONFIRMATION ENGINE (Pullbacks / Re-entries) ──
+  if (!m5Ready && h1Dir && m15Dir && h1Dir === m15Dir) {
+    // 1. Check Setup Expiry (35 bars)
+    if (state.pendingPullback && state.pullbackEpoch && (currentCandleEpoch - state.pullbackEpoch) > (SETUP_EXPIRY_BARS * M5)) {
+      state.pendingPullback = null;
+      state.pullbackEpoch = null;
+      console.log("Pending pullback setup expired (35 bars reached).");
+    }
+
+    const cciCrossBuy = (cci[i-1] <= -114.4) && (cci[i] > -114.4);
+    const cciCrossSell = (cci[i-1] >= 90) && (cci[i] < 90);
+    const macdCrossUp = (m5Macd.signalLine[i-1] <= 0) && (m5SignalVal > 0);
+    const macdCrossDown = (m5Macd.signalLine[i-1] >= 0) && (m5SignalVal < 0);
+
+    // 2. Invalidation Checks for Active Pending States (Opposite Crosses)
+    if (state.pendingPullback === "BUY") {
+      const oppositeMacdCross = (m5Macd.signalLine[i-1] >= 0) && (m5SignalVal < 0);
+      const oppositeCciCross = (cci[i-1] > -114.4) && (cci[i] <= -114.4);
+      if (oppositeMacdCross || oppositeCciCross || h1Dir !== "BUY") {
+        console.log("Pending BUY pullback invalidated by opposite cross or trend shift.");
+        state.pendingPullback = null;
+        state.pullbackEpoch = null;
+      }
+    } else if (state.pendingPullback === "SELL") {
+      const oppositeMacdCross = (m5Macd.signalLine[i-1] <= 0) && (m5SignalVal > 0);
+      const oppositeCciCross = (cci[i-1] < 90) && (cci[i] >= 90);
+      if (oppositeMacdCross || oppositeCciCross || h1Dir !== "SELL") {
+        console.log("Pending SELL pullback invalidated by opposite cross or trend shift.");
+        state.pendingPullback = null;
+        state.pullbackEpoch = null;
+      }
+    }
+
+    // 3. Confirmation & Arming Checks
+    if (state.pendingPullback === "BUY") {
+      if (m5SignalVal > 0 || macdCrossUp) {
+        m5Ready = true;
+        entryType = 'PHASE_B';
+        state.pendingPullback = null;
+        state.pullbackEpoch = null;
+      }
+    } else if (state.pendingPullback === "SELL") {
+      if (m5SignalVal < 0 || macdCrossDown) {
+        m5Ready = true;
+        entryType = 'PHASE_B';
+        state.pendingPullback = null;
+        state.pullbackEpoch = null;
+      }
+    } else {
+      // Arm new pending pullback state if either indicator triggers first
+      if (h1Dir === "BUY") {
+        if (cciCrossBuy) {
+          state.pendingPullback = "BUY";
+          state.pullbackEpoch = currentCandleEpoch;
+          console.log("CCI crossed oversold upward first. Armed waiting for MACD confirmation.");
+        } else if (macdCrossUp) {
+          state.pendingPullback = "BUY";
+          state.pullbackEpoch = currentCandleEpoch;
+          console.log("M5 MACD crossed zero upward first. Armed waiting for CCI confirmation.");
+        }
+      } else if (h1Dir === "SELL") {
+        if (cciCrossSell) {
+          state.pendingPullback = "SELL";
+          state.pullbackEpoch = currentCandleEpoch;
+          console.log("CCI crossed overbought downward first. Armed waiting for MACD confirmation.");
+        } else if (macdCrossDown) {
+          state.pendingPullback = "SELL";
+          state.pullbackEpoch = currentCandleEpoch;
+          console.log("M5 MACD crossed zero downward first. Armed waiting for CCI confirmation.");
         }
       }
     }
-
-    // ── PHASE B: ESTABLISHED TREND PULLBACKS ─────────────────────────────
-    if (!m5Ready) {
-      const cciCrossBuy = (cci[i-1] <= -114.4) && (cci[i] > -114.4);
-      const cciCrossSell = (cci[i-1] >= 90) && (cci[i] < 90);
-
-      if (h1Dir === "BUY" && m5SignalVal > 0 && cciCrossBuy) {
-        m5Ready = true;
-        entryType = 'PHASE_B';
-      }
-      if (h1Dir === "SELL" && m5SignalVal < 0 && cciCrossSell) {
-        m5Ready = true;
-        entryType = 'PHASE_B';
-      }
-    }
-
-    if (m5Ready) {
-      if (state.waitingFor !== h1Dir || state.activeEntryType !== entryType) {
-        state.waitingFor = h1Dir;
-        state.activeEntryType = entryType;
-        state.setupEpoch = currentCandleEpoch;
-        console.log(`Setup armed for ${h1Dir} via ${entryType}`);
-      }
-    }
-  } else {
-    state.waitingFor = null;
-    state.setupEpoch = null;
-    state.activeEntryType = null;
   }
 
-  // Setup Expiry Check
-  if (state.waitingFor && state.setupEpoch && (currentCandleEpoch - state.setupEpoch) > (SETUP_EXPIRY_BARS * M5)) {
-    state.waitingFor = null;
-    state.setupEpoch = null;
+  if (m5Ready) {
+    if (state.waitingFor !== h1Dir || state.activeEntryType !== entryType) {
+      state.waitingFor = h1Dir;
+      state.activeEntryType = entryType;
+      state.setupEpoch = currentCandleEpoch;
+      console.log(`Setup armed for ${h1Dir} via ${entryType}`);
+    }
+  } else {
+    if (!h1Dir && !m15m5Aligned && !state.pendingPullback) {
+      state.waitingFor = null;
+      state.setupEpoch = null;
+      state.activeEntryType = null;
+    }
   }
 
   const h4Candle = await fetchH4Candle();
@@ -588,8 +649,9 @@ async function runScanMode() {
   const h4Bearish = parseFloat(h4Candle.close) < parseFloat(h4Candle.open);
   const d1Ctx = await getD1Context();
 
-  const buySignal = state.waitingFor === "BUY" && h4Bullish;
-  const sellSignal = state.waitingFor === "SELL" && h4Bearish;
+  const bypassH4ForPhaseA = (state.activeEntryType === 'PHASE_A');
+  const buySignal = state.waitingFor === "BUY" && (bypassH4ForPhaseA || h4Bullish);
+  const sellSignal = state.waitingFor === "SELL" && (bypassH4ForPhaseA || h4Bearish);
 
   let signalTriggered = false, direction = "", entry, sl, risk, tp1, tp2, tp3;
   if (buySignal) {
@@ -614,7 +676,7 @@ async function runScanMode() {
     const timeFormatted = new Date(currentCandleEpoch * 1000).toISOString().replace("T"," ").substring(0,19);
     const h4Dir = h4Bullish ? "🟢 BULLISH" : "🔴 BEARISH";
 
-    let message = `🚨 *${SYMBOL_NAME.toUpperCase()} CONFIRMED SIGNAL* 🚨\n\nDirection: ${direction}\nRepo: ${REPO_LABEL}\nTimeframe: M5\n\n📍 Entry: ${entry.toFixed(4)}\n🛑 SL: ${sl.toFixed(4)} ($${slDollars} hard)\n🎯 TP1: ${tp1.toFixed(4)} ($7.00 soft) → trail with CCI zero-cross\n🎯 TP2: ${tp2.toFixed(4)} (reference)\n🎯 TP3: ${tp3.toFixed(4)} (reference)\n\n💰 Stake: $${STAKE_USD} | Hard SL: $${slDollars} | TP1: $7.00 | Safety: $${SAFETY_TP_USD}\n📊 Risk: ${risk.toFixed(2)} points\n️ H4: ${h4Dir} ✅ Direction confirmed\n⚡ Setup: H1 SMA + M15 MACD + M5 CCI (${state.activeEntryType})\n━━━━━━━━━━━━━━━━━━━━\n🌍 *D1 CANDLE STATUS*\n━━━━━━━━━━━━━━━━━━━━\n`;
+    let message = `🚨 *${SYMBOL_NAME.toUpperCase()} CONFIRMED SIGNAL* 🚨\n\nDirection: ${direction}\nRepo: ${REPO_LABEL}\nTimeframe: M5\n\n📍 Entry: ${entry.toFixed(4)}\n🛑 SL: ${sl.toFixed(4)} ($${slDollars} hard)\n🎯 TP1: ${tp1.toFixed(4)} ($7.00 soft) → trail with CCI zero-cross\n🎯 TP2: ${tp2.toFixed(4)} (reference)\n🎯 TP3: ${tp3.toFixed(4)} (reference)\n\n💰 Stake: $${STAKE_USD} | Hard SL: $${slDollars} | TP1: $7.00 | Safety: $${SAFETY_TP_USD}\n📊 Risk: ${risk.toFixed(2)} points\n️ H4: ${h4Dir} ✅ Direction confirmed\n⚡ Setup: Anticipatory M15/M5 + Stateful Cross-Confirmation (${state.activeEntryType})\n━━━━━━━━━━━━━━━━━━━━\n🌍 *D1 CANDLE STATUS*\n━━━━━━━━━━━━━━━━━━━━\n`;
     if (d1Ctx) message += `Direction: ${d1Ctx.direction}\nD1 Open: ${d1Ctx.open.toFixed(4)}\nD1 Current: ${d1Ctx.close.toFixed(4)}\nMovement: ${d1Ctx.change.toFixed(4)} pts (${d1Ctx.changePct.toFixed(2)}%)\nAlignment: ${alignment}\n\n`;
     else message += `⚠️ D1 data unavailable\n\n`;
     message += `⏰ Time (UTC): ${timeFormatted}\n\n💡 To close manually: send \`/close win\` or \`/close loss\` in this chat`;
@@ -645,6 +707,8 @@ async function runScanMode() {
     state.waitingFor = null;
     state.setupEpoch = null;
     state.activeEntryType = null;
+    state.pendingPullback = null;
+    state.pullbackEpoch = null;
   }
 
   state.lastProcessedEpoch = currentCandleEpoch;
