@@ -1,4 +1,4 @@
-import WebSocket from "ws";
+﻿import WebSocket from "ws";
 import fetch from "node-fetch";
 import fs from "fs";
 
@@ -99,8 +99,8 @@ async function runSummary(label) {
   const wins = closed.filter(t => t.result === "WIN").length;
   const losses = closed.filter(t => t.result === "LOSS").length;
   const openTrades = trades.filter(t => !t.result);
-  let msg = `📊 *${label} Summary — ${REPO_LABEL}*\n\nTotal closed: ${closed.length}\n✅ Wins: ${wins} | ❌ Losses: ${losses}\nWin rate: ${closed.length ? ((wins/closed.length)*100).toFixed(1) : 0}%\nOpen positions: ${openTrades.length}`;
-  if (openTrades.length) msg += "\n\n*Open trades:*\n" + openTrades.map(t => `• ${t.direction} @ ${t.entry} (${t.openTime})`).join("\n");
+  let msg = `ðŸ“Š *${label} Summary â€” ${REPO_LABEL}*\n\nTotal closed: ${closed.length}\nâœ… Wins: ${wins} | âŒ Losses: ${losses}\nWin rate: ${closed.length ? ((wins/closed.length)*100).toFixed(1) : 0}%\nOpen positions: ${openTrades.length}`;
+  if (openTrades.length) msg += "\n\n*Open trades:*\n" + openTrades.map(t => `â€¢ ${t.direction} @ ${t.entry} (${t.openTime})`).join("\n");
   await sendTelegram(msg);
 }
 
@@ -116,7 +116,7 @@ async function checkTelegramCommands() {
       if (text === "/status") {
         const trades = fs.existsSync("trades.json") ? JSON.parse(fs.readFileSync("trades.json")) : [];
         const open = trades.filter(t => !t.result);
-        await sendTelegram(open.length ? `📍 Open trades:\n${open.map(t=>`• ${t.direction} @ ${t.entry}`).join("\n")}` : "No open trades.");
+        await sendTelegram(open.length ? `ðŸ“ Open trades:\n${open.map(t=>`â€¢ ${t.direction} @ ${t.entry}`).join("\n")}` : "No open trades.");
       }
       if (text === "/close win" || text === "/closewin") { await executeManualClose("WIN", "telegram command"); }
       if (text === "/close loss" || text === "/closeloss") { await executeManualClose("LOSS", "telegram command"); }
@@ -128,7 +128,7 @@ async function checkTelegramCommands() {
 async function executeManualClose(result, reason) {
   const trades = fs.existsSync("trades.json") ? JSON.parse(fs.readFileSync("trades.json")) : [];
   const open = trades.filter(t => !t.result);
-  if (!open.length) { await sendTelegram(`⚠️ *${REPO_LABEL}*\n\nNo open trade found to close.`); return; }
+  if (!open.length) { await sendTelegram(`âš ï¸ *${REPO_LABEL}*\n\nNo open trade found to close.`); return; }
   for (const trade of open) {
     const currentPrice = await getCurrentPrice(trade.symbol);
     let serverPnl = calcUnrealizedPnL(trade, currentPrice);
@@ -141,7 +141,7 @@ async function executeManualClose(result, reason) {
           if (errCode === "ContractNotFound" || errDesc.includes("not found among your open positions")) {
             serverPnl = -5.00;
           } else {
-            await sendTelegram(`⚠️ *${REPO_LABEL}* — Manual Close Warning\n\nFailed to close contract \`${trade.contractId}\` on Deriv: ${errDesc}. Retrying next scan.`);
+            await sendTelegram(`âš ï¸ *${REPO_LABEL}* â€” Manual Close Warning\n\nFailed to close contract \`${trade.contractId}\` on Deriv: ${errDesc}. Retrying next scan.`);
             continue;
           }
         }
@@ -156,14 +156,14 @@ async function executeManualClose(result, reason) {
     trade.result = result;
     trade.closeTime = new Date().toISOString().replace("T"," ").substring(0,19);
     fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
-    const icon = result === "WIN" ? "✅" : "❌";
+    const icon = result === "WIN" ? "âœ…" : "âŒ";
     const contractType = trade.direction === "BUY" ? "MULTUP" : "MULTDOWN";
     const durationMs = new Date(trade.closeTime) - new Date(trade.openTime);
     const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
     const tpDollars = parseFloat((STAKE_USD * RISK_REWARD).toFixed(2));
     const pnlStr = serverPnl >= 0 ? `+$${serverPnl.toFixed(2)}` : `-$${Math.abs(serverPnl).toFixed(2)}`;
-    const tp1Status = trade.tp1Reached ? "✅ TP1 hit" : "❌ TP1 not reached";
-    await sendTelegram(`${icon} *${REPO_LABEL} — Trade ${result}*\n\nDirection: ${trade.direction} (${contractType})\nSymbol: ${SYMBOL_NAME}\n\n📍 Entry: ${trade.entry.toFixed(4)}\n🏁 Exit: ${currentPrice.toFixed(4)}\n🛑 SL: ${trade.sl.toFixed(4)} ($${slDollars} hard)\n🎯 TP1: ${trade.tp1.toFixed(4)} (BGA) ${tp1Status}\n\n💵 P&L: ${pnlStr} (Net of comm.)\nReason: ${reason}\nDuration: ${formatDuration(durationMs)}\n\nOpened: ${trade.openTime}\nClosed: ${trade.closeTime}\n` + (trade.contractId ? `Contract: \`${trade.contractId}\`` : ""));
+    const tp1Status = trade.tp1Reached ? "âœ… TP1 hit" : "âŒ TP1 not reached";
+    await sendTelegram(`${icon} *${REPO_LABEL} â€” Trade ${result}*\n\nDirection: ${trade.direction} (${contractType})\nSymbol: ${SYMBOL_NAME}\n\nðŸ“ Entry: ${trade.entry.toFixed(4)}\nðŸ Exit: ${currentPrice.toFixed(4)}\nðŸ›‘ SL: ${trade.sl.toFixed(4)} ($${slDollars} hard)\nðŸŽ¯ TP1: ${trade.tp1.toFixed(4)} (BGA) ${tp1Status}\n\nðŸ’µ P&L: ${pnlStr} (Net of comm.)\nReason: ${reason}\nDuration: ${formatDuration(durationMs)}\n\nOpened: ${trade.openTime}\nClosed: ${trade.closeTime}\n` + (trade.contractId ? `Contract: \`${trade.contractId}\`` : ""));
   }
 }
 
@@ -296,18 +296,18 @@ async function getDerivOTP(accountId) {
   });
   const json = await res.json();
   if (!res.ok) throw new Error(`getOTP failed: ${JSON.stringify(json.errors || json)}`);
-  console.log(` OTP WebSocket URL obtained ✅`);
+  console.log(` OTP WebSocket URL obtained âœ…`);
   return json.data.url;
 }
 
-// ── Resilient Trade Execution with withRetry ──
+// â”€â”€ Resilient Trade Execution with withRetry â”€â”€
 async function executeTrade(direction) {
-  if (!DERIV_TOKEN) { console.log("⚠️ DERIV_API_TOKEN not set. Skipping."); return null; }
-  if (!DERIV_APP_ID) { console.log("⚠️ DERIV_APP_ID not set. Skipping."); return null; }
-  if (!PROXY_URL || !PROXY_SECRET) { console.log("⚠️ PROXY_URL or PROXY_SECRET not set. Skipping."); return null; }
+  if (!DERIV_TOKEN) { console.log("âš ï¸ DERIV_API_TOKEN not set. Skipping."); return null; }
+  if (!DERIV_APP_ID) { console.log("âš ï¸ DERIV_APP_ID not set. Skipping."); return null; }
+  if (!PROXY_URL || !PROXY_SECRET) { console.log("âš ï¸ PROXY_URL or PROXY_SECRET not set. Skipping."); return null; }
   
   return withRetry(async () => {
-    console.log(`🔄 Sending ${direction} trade via Cloudflare proxy...`);
+    console.log(`ðŸ”„ Sending ${direction} trade via Cloudflare proxy...`);
     const accountId = await getDerivAccountId();
     const wsUrl = await getDerivOTP(accountId);
     const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
@@ -334,7 +334,7 @@ async function executeTrade(direction) {
       body: JSON.stringify({ wsUrl, action: "buy", params })
     });
     const data = await response.json();
-    console.log("📨 Proxy response:", JSON.stringify(data));
+    console.log("ðŸ“¨ Proxy response:", JSON.stringify(data));
     
     if (data.error || data.errors || String(JSON.stringify(data)).includes("429") || String(JSON.stringify(data)).includes("RateLimit")) {
       throw new Error(`429/RateLimit/Error: ${JSON.stringify(data.error || data.errors || data)}`);
@@ -342,18 +342,18 @@ async function executeTrade(direction) {
     
     const contractId = data.buy?.contract_id;
     if (contractId) { 
-      console.log(`✅ Trade Executed! Contract ID: ${contractId}`); 
+      console.log(`âœ… Trade Executed! Contract ID: ${contractId}`); 
       return contractId; 
     }
     throw new Error("No contract ID returned in buy response");
   }, 4, 5000);
 }
 
-// ── Resilient Contract Closing with withRetry ──
+// â”€â”€ Resilient Contract Closing with withRetry â”€â”€
 async function closeContract(contractId) {
   if (!DERIV_TOKEN || !contractId || !PROXY_URL || !PROXY_SECRET || !DERIV_APP_ID) return null;
   return withRetry(async () => {
-    console.log(`🔄 Closing contract ${contractId} via proxy...`);
+    console.log(`ðŸ”„ Closing contract ${contractId} via proxy...`);
     const accountId = await getDerivAccountId();
     const wsUrl = await getDerivOTP(accountId);
     const response = await fetch(PROXY_URL, {
@@ -362,7 +362,7 @@ async function closeContract(contractId) {
       body: JSON.stringify({ wsUrl, action: "sell", params: { sell: contractId, price: 0 } })
     });
     const data = await response.json();
-    console.log("📨 Close response:", JSON.stringify(data));
+    console.log("ðŸ“¨ Close response:", JSON.stringify(data));
     
     if (data.error || data.errors || String(JSON.stringify(data)).includes("429") || String(JSON.stringify(data)).includes("RateLimit")) {
       throw new Error(`429/RateLimit/Error: ${JSON.stringify(data.error || data.errors || data)}`);
@@ -593,27 +593,27 @@ async function getD1Context() {
     const c = candles[candles.length - 2];
     const open = parseFloat(c.open), close = parseFloat(c.close);
     const change = close - open, changePct = (change / open) * 100;
-    return { direction: close > open ? "🟢 BULLISH" : "🔴 BEARISH", open, close, change, changePct, candles };
+    return { direction: close > open ? "ðŸŸ¢ BULLISH" : "ðŸ”´ BEARISH", open, close, change, changePct, candles };
   } catch (e) { console.error("getD1Context error:", e.message); return null; }
 }
 
 function checkAlignment(signalDir, d1Dir) {
   const bull = d1Dir.includes("BULLISH"), bear = d1Dir.includes("BEARISH");
-  if (signalDir === "BUY" && bull) return "✅ D1 confirms BUY";
-  if (signalDir === "SELL" && bear) return "✅ D1 confirms SELL";
-  if (signalDir === "BUY" && bear) return "⚠️ Counter-trend BUY (D1 bearish)";
-  if (signalDir === "SELL" && bull) return "⚠️ Counter-trend SELL (D1 bullish)";
-  return "❓ Unknown";
+  if (signalDir === "BUY" && bull) return "âœ… D1 confirms BUY";
+  if (signalDir === "SELL" && bear) return "âœ… D1 confirms SELL";
+  if (signalDir === "BUY" && bear) return "âš ï¸ Counter-trend BUY (D1 bearish)";
+  if (signalDir === "SELL" && bull) return "âš ï¸ Counter-trend SELL (D1 bullish)";
+  return "â“ Unknown";
 }
 
 // ==================== MAIN SCANNER & TRADE LOGIC ====================
 async function runScanMode() {
-  console.log(`[${REPO_LABEL}] Scan started — ${new Date().toISOString()}`);
+  console.log(`[${REPO_LABEL}] Scan started â€” ${new Date().toISOString()}`);
   await checkTelegramCommands();
   let trades = [];
   try { trades = JSON.parse(fs.readFileSync("trades.json")); } catch {}
 
-  // ── Open Position Management ──────────────────────────────────────────
+  // â”€â”€ Open Position Management â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const openTrade = trades.find(t => !t.result);
   if (openTrade) {
     const tradeData = await fetchOpenTradeData();
@@ -634,8 +634,8 @@ async function runScanMode() {
             if (errCode === "ContractNotFound" || errDesc.includes("not found among your open positions")) {
               serverPnl = -5.00;
             } else {
-              console.error(`⚠️ Failed to close contract on Deriv: ${errDesc}`);
-              await sendTelegram(`⚠️ *${REPO_LABEL}* — Close Warning\n\nFailed to close contract \`${openTrade.contractId}\` on Deriv: ${errDesc}. Retrying next scan.`);
+              console.error(`âš ï¸ Failed to close contract on Deriv: ${errDesc}`);
+              await sendTelegram(`âš ï¸ *${REPO_LABEL}* â€” Close Warning\n\nFailed to close contract \`${openTrade.contractId}\` on Deriv: ${errDesc}. Retrying next scan.`);
               return;
             }
           } else if (typeof closeRes.sell?.profit === 'number') {
@@ -643,21 +643,21 @@ async function runScanMode() {
           }
         } catch (e) {
           console.error("Close exception:", e.message);
-          await sendTelegram(`⚠️ *${REPO_LABEL}* — Close Error\n\nException closing contract \`${openTrade.contractId}\`: ${e.message}. Retrying next scan.`);
+          await sendTelegram(`âš ï¸ *${REPO_LABEL}* â€” Close Error\n\nException closing contract \`${openTrade.contractId}\`: ${e.message}. Retrying next scan.`);
           return;
         }
       }
 
       fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
-      const icon = result === "WIN" ? "✅" : "❌";
+      const icon = result === "WIN" ? "âœ…" : "âŒ";
       const contractType = openTrade.direction === "BUY" ? "MULTUP" : "MULTDOWN";
       const durationMs = new Date(openTrade.closeTime) - new Date(openTrade.openTime);
       const slDollars = parseFloat((STAKE_USD * 0.5).toFixed(2));
       const tpDollars = parseFloat((STAKE_USD * RISK_REWARD).toFixed(2));
-      const tp1Status = openTrade.tp1Reached ? "✅ TP1 hit" : "❌ TP1 not reached";
+      const tp1Status = openTrade.tp1Reached ? "âœ… TP1 hit" : "âŒ TP1 not reached";
       const pnlStr = serverPnl >= 0 ? `+$${serverPnl.toFixed(2)}` : `-$${Math.abs(serverPnl).toFixed(2)}`;
       
-      await sendTelegram(`${icon} *${REPO_LABEL} — Trade ${result}*\n\nDirection: ${openTrade.direction} (${contractType})\nSymbol: ${SYMBOL_NAME}\n\n📍 Entry: ${openTrade.entry.toFixed(4)}\n🏁 Exit: ${currentPrice.toFixed(4)}\n🛑 SL: ${openTrade.sl.toFixed(4)} ($${slDollars} hard)\n🎯 TP1: ${openTrade.tp1.toFixed(4)} (BGA) ${tp1Status}\n\n💵 P&L: ${pnlStr} (Net of comm.)\nReason: ${exitReason}\nDuration: ${formatDuration(durationMs)}\n\nOpened: ${openTrade.openTime}\nClosed: ${openTrade.closeTime}\n` + (openTrade.contractId ? `Contract: \`${openTrade.contractId}\`` : ""));
+      await sendTelegram(`${icon} *${REPO_LABEL} â€” Trade ${result}*\n\nDirection: ${openTrade.direction} (${contractType})\nSymbol: ${SYMBOL_NAME}\n\nðŸ“ Entry: ${openTrade.entry.toFixed(4)}\nðŸ Exit: ${currentPrice.toFixed(4)}\nðŸ›‘ SL: ${openTrade.sl.toFixed(4)} ($${slDollars} hard)\nðŸŽ¯ TP1: ${openTrade.tp1.toFixed(4)} (BGA) ${tp1Status}\n\nðŸ’µ P&L: ${pnlStr} (Net of comm.)\nReason: ${exitReason}\nDuration: ${formatDuration(durationMs)}\n\nOpened: ${openTrade.openTime}\nClosed: ${openTrade.closeTime}\n` + (openTrade.contractId ? `Contract: \`${openTrade.contractId}\`` : ""));
     };
 
     // M15 SMA Opposite Cross Exit: Close immediately if M15 Fast/Slow SMA crosses against position
@@ -673,11 +673,11 @@ async function runScanMode() {
         const m15CrossedDown = (smaFast15m[m15ci-1] >= smaSlow15m[m15ci-1]) && (smaFast15m[m15ci] < smaSlow15m[m15ci]);
 
         if (openTrade.direction === "BUY" && m15CrossedDown) {
-          await closeWith("LOSS", `M15 SMA Trend Reversal Exit — M15 Fast SMA crossed below Slow SMA`);
+          await closeWith("LOSS", `M15 SMA Trend Reversal Exit â€” M15 Fast SMA crossed below Slow SMA`);
           return;
         }
         if (openTrade.direction === "SELL" && m15CrossedUp) {
-          await closeWith("LOSS", `M15 SMA Trend Reversal Exit — M15 Fast SMA crossed above Slow SMA`);
+          await closeWith("LOSS", `M15 SMA Trend Reversal Exit â€” M15 Fast SMA crossed above Slow SMA`);
           return;
         }
       }
@@ -717,7 +717,7 @@ async function runScanMode() {
             cciFakeoutCross = (cciExit[iePrev] >= 90 && cciExit[ie] < 90) || (cciExit[iePrev] <= -114.4 && cciExit[ie] > -114.4);
           }
           if (twoCandlesAgainst && (tdiReversedInside || cciFakeoutCross)) {
-            await closeWith("LOSS", `Early fakeout exit — 2 candles closed against entry with indicator reversal`);
+            await closeWith("LOSS", `Early fakeout exit â€” 2 candles closed against entry with indicator reversal`);
             return;
           }
         }
@@ -728,7 +728,7 @@ async function runScanMode() {
     if (!openTrade.tp1Reached && !openTrade.breakevenSet && pnl >= BREAKEVEN_ACTIVATE_USD) {
       openTrade.breakevenSet = true;
       fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
-      await sendTelegram(`⚖️ *${REPO_LABEL} — Breakeven Armed*\nProfit reached $${BREAKEVEN_ACTIVATE_USD.toFixed(2)}. Price floor locked at entry (${openTrade.entry.toFixed(4)}).`);
+      await sendTelegram(`âš–ï¸ *${REPO_LABEL} â€” Breakeven Armed*\nProfit reached $${BREAKEVEN_ACTIVATE_USD.toFixed(2)}. Price floor locked at entry (${openTrade.entry.toFixed(4)}).`);
     }
 
     // COMMISSION-COVERED BREAKEVEN TRIGGER: Close early to lock in +$0.50 net profit
@@ -744,21 +744,21 @@ async function runScanMode() {
       (openTrade.direction === "SELL" && currentPrice >= breakevenPrice)
     );
     if (breakevenHit) {
-      await closeWith("WIN", `Commission-Covered Breakeven exit — locked +$0.50 net profit at price ${breakevenPrice.toFixed(4)}`);
+      await closeWith("WIN", `Commission-Covered Breakeven exit â€” locked +$0.50 net profit at price ${breakevenPrice.toFixed(4)}`);
       return;
     }
 
     // 1. Hard SL Price Check
     const slBreached = openTrade.direction === "BUY" ? currentPrice <= openTrade.sl : currentPrice >= openTrade.sl;
     if (slBreached) {
-      await closeWith("LOSS", `Hard SL hit — price ${currentPrice.toFixed(4)} breached SL ${openTrade.sl.toFixed(4)}`);
+      await closeWith("LOSS", `Hard SL hit â€” price ${currentPrice.toFixed(4)} breached SL ${openTrade.sl.toFixed(4)}`);
       return;
     }
 
     // 2. TP2 Ultimate Target Hit
     const tp2Hit = openTrade.direction === "BUY" ? currentPrice >= openTrade.tp2 : currentPrice <= openTrade.tp2;
     if (tp2Hit) {
-      await closeWith("WIN", `TP2 Ultimate Target hit — price ${currentPrice.toFixed(4)} reached BGA level ${openTrade.tp2.toFixed(4)}`);
+      await closeWith("WIN", `TP2 Ultimate Target hit â€” price ${currentPrice.toFixed(4)} reached BGA level ${openTrade.tp2.toFixed(4)}`);
       return;
     }
 
@@ -768,7 +768,7 @@ async function runScanMode() {
       if (tp1Hit) {
         openTrade.tp1Reached = true;
         fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
-        await sendTelegram(`🎯 TP1 BGA Whole Number reached (${openTrade.tp1.toFixed(4)}) on ${openTrade.direction} — 40% peak-drop trailing now armed.`);
+        await sendTelegram(`ðŸŽ¯ TP1 BGA Whole Number reached (${openTrade.tp1.toFixed(4)}) on ${openTrade.direction} â€” 40% peak-drop trailing now armed.`);
       }
     }
 
@@ -781,7 +781,7 @@ async function runScanMode() {
       const dropThreshold = openTrade.peakProfit * 0.40;
       if (openTrade.peakProfit > 0 && pnl <= openTrade.peakProfit - dropThreshold) {
         const result = pnl >= 0 ? "WIN" : "LOSS";
-        await closeWith(result, `Profit trail exit — locked ~$${pnl.toFixed(2)} (peak $${openTrade.peakProfit.toFixed(2)}, 40% drop from peak)`);
+        await closeWith(result, `Profit trail exit â€” locked ~$${pnl.toFixed(2)} (peak $${openTrade.peakProfit.toFixed(2)}, 40% drop from peak)`);
         return;
       }
     }
@@ -817,11 +817,11 @@ async function runScanMode() {
 
           if (openTrade.exitTrigger === "CCI" && tdiCrossDown) {
             const result = pnl >= 0 ? "WIN" : "LOSS";
-            await closeWith(result, `Stateful Momentum Exit — CCI zero cross armed, validated by TDI MBL cross down`);
+            await closeWith(result, `Stateful Momentum Exit â€” CCI zero cross armed, validated by TDI MBL cross down`);
             return;
           } else if (openTrade.exitTrigger === "TDI" && cciCrossZeroDown) {
             const result = pnl >= 0 ? "WIN" : "LOSS";
-            await closeWith(result, `Stateful Momentum Exit — TDI MBL cross armed, validated by CCI zero cross down`);
+            await closeWith(result, `Stateful Momentum Exit â€” TDI MBL cross armed, validated by CCI zero cross down`);
             return;
           } else if (openTrade.exitTrigger === null) {
             if (cciCrossZeroDown) {
@@ -844,11 +844,11 @@ async function runScanMode() {
 
           if (openTrade.exitTrigger === "CCI" && tdiCrossUp) {
             const result = pnl >= 0 ? "WIN" : "LOSS";
-            await closeWith(result, `Stateful Momentum Exit — CCI zero cross armed, validated by TDI MBL cross up`);
+            await closeWith(result, `Stateful Momentum Exit â€” CCI zero cross armed, validated by TDI MBL cross up`);
             return;
           } else if (openTrade.exitTrigger === "TDI" && cciCrossZeroUp) {
             const result = pnl >= 0 ? "WIN" : "LOSS";
-            await closeWith(result, `Stateful Momentum Exit — TDI MBL cross armed, validated by CCI zero cross up`);
+            await closeWith(result, `Stateful Momentum Exit â€” TDI MBL cross armed, validated by CCI zero cross up`);
             return;
           } else if (openTrade.exitTrigger === null) {
             if (cciCrossZeroUp) {
@@ -865,11 +865,11 @@ async function runScanMode() {
       }
     }
 
-    console.log("Open trade being managed — skipping scan.");
+    console.log("Open trade being managed â€” skipping scan.");
     return;
   }
 
-  // ── Signal Scan (Consolidated Data Fetching - ONE Single WebSocket Handshake) ──
+  // â”€â”€ Signal Scan (Consolidated Data Fetching - ONE Single WebSocket Handshake) â”€â”€
   const scanData = await fetchAllData();
   const candles = scanData.m5;
   const h1Candles = scanData.h1;
@@ -883,7 +883,7 @@ async function runScanMode() {
   const closes = candles.map(c => parseFloat(c.close));
 
   if (state.lastProcessedEpoch === currentCandleEpoch) {
-    console.log("Already processed this candle — skipping.");
+    console.log("Already processed this candle â€” skipping.");
     return;
   }
 
@@ -933,7 +933,7 @@ async function runScanMode() {
     }
   }
 
-  // ── HARD HIGHER-TIMEFRAME TREND GATE & M15 TDI FILTER ─────────────────
+  // â”€â”€ HARD HIGHER-TIMEFRAME TREND GATE & M15 TDI FILTER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   let m15TdiFilterPassed = true;
   if (m15Candles && m15Candles.length >= 60) {
     const m15Closes = m15Candles.map(c => parseFloat(c.close));
@@ -982,7 +982,7 @@ async function runScanMode() {
   let m5Ready = false;
   let entryType = null;
 
-  // ── PHASE A: STRICTLY A CLOSED FRESH H1 CROSS (First Trade) ───────────
+  // â”€â”€ PHASE A: STRICTLY A CLOSED FRESH H1 CROSS (First Trade) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (h1FreshCross && state.phaseATriggeredEpoch !== h1Epoch) {
     const mblVal = tdi.middle[i];
     const m5Aligned = (mblVal != null && rsi[i] != null) && ((h1Dir === "BUY" && rsi[i] > mblVal) || (h1Dir === "SELL" && rsi[i] < mblVal));
@@ -997,7 +997,7 @@ async function runScanMode() {
     }
   }
 
-  // ── PHASE C: HIGHER-TIMEFRAME REALIGNMENT ENTRY ──────────────────────
+  // â”€â”€ PHASE C: HIGHER-TIMEFRAME REALIGNMENT ENTRY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (!m5Ready && justRealigned && state.phaseCTriggeredEpoch !== currentCandleEpoch) {
     const mblVal = tdi.middle[i];
     const m5Aligned = (mblVal != null && rsi[i] != null) && ((h1Dir === "BUY" && rsi[i] > mblVal) || (h1Dir === "SELL" && rsi[i] < mblVal));
@@ -1012,7 +1012,7 @@ async function runScanMode() {
     }
   }
 
-  // ── PHASE D: SHALLOW PULLBACK (TDI Outer Band + MBL Cross + CCI Zero Cross) ──
+  // â”€â”€ PHASE D: SHALLOW PULLBACK (TDI Outer Band + MBL Cross + CCI Zero Cross) â”€â”€
   if (!m5Ready && h1Dir && m15Dir && (h1Dir === m15Dir) && state.phaseDTriggeredEpoch !== currentCandleEpoch) {
     const mblPrev = tdi.middle[i-1], mblCurr = tdi.middle[i];
     const rsiPrev = rsi[i-1], rsiCurr = rsi[i];
@@ -1033,7 +1033,7 @@ async function runScanMode() {
     }
   }
 
-  // ── PHASE B: STATEFUL CROSS-CONFIRMATION ENGINE (Pullbacks / Re-entries) ──
+  // â”€â”€ PHASE B: STATEFUL CROSS-CONFIRMATION ENGINE (Pullbacks / Re-entries) â”€â”€
   if (!m5Ready && h1Dir && m15Dir && h1Dir === m15Dir) {
     if (state.pendingPullback && state.pullbackEpoch && (currentCandleEpoch - state.pullbackEpoch) > (SETUP_EXPIRY_BARS * M5)) {
       state.pendingPullback = null;
@@ -1136,7 +1136,7 @@ async function runScanMode() {
   const h4Bearish = parseFloat(h4Candle.close) < parseFloat(h4Candle.open);
   const prevD1 = d1Candles[d1Candles.length - 2];
   const d1Ctx = {
-    direction: parseFloat(prevD1.close) > parseFloat(prevD1.open) ? "🟢 BULLISH" : "🔴 BEARISH",
+    direction: parseFloat(prevD1.close) > parseFloat(prevD1.open) ? "ðŸŸ¢ BULLISH" : "ðŸ”´ BEARISH",
     open: parseFloat(prevD1.open),
     close: parseFloat(prevD1.close),
     change: parseFloat(prevD1.close) - parseFloat(prevD1.open),
@@ -1169,33 +1169,33 @@ async function runScanMode() {
       risk = sl - entry;
     }
 
-    const alignment = d1Ctx ? checkAlignment(direction, d1Ctx.direction) : "⚠️ D1 data unavailable";
+    const alignment = d1Ctx ? checkAlignment(direction, d1Ctx.direction) : "âš ï¸ D1 data unavailable";
     const timeFormatted = new Date(currentCandleEpoch * 1000).toISOString().replace("T"," ").substring(0,19);
-    const h4Dir = h4Bullish ? "🟢 BULLISH" : "🔴 BEARISH";
+    const h4Dir = h4Bullish ? "ðŸŸ¢ BULLISH" : "ðŸ”´ BEARISH";
     const bgaTag = getBGAInfo(entry);
 
-    let message = `🚨 *${SYMBOL_NAME.toUpperCase()} CONFIRMED SIGNAL* 🚨\n\nDirection: ${direction}\nRepo: ${REPO_LABEL}\nTimeframe: M5\n\n📍 Entry: ${entry.toFixed(4)}\n🛑 SL: ${sl.toFixed(4)} ($${slDollars} hard)\n🎯 TP1: ${tp1.toFixed(4)} (BGA Whole) → trail with CCI zero-cross\n🎯 TP2 (Ultimate TP): ${tp2.toFixed(4)} (BGA)\n🎯 TP3: ${tp3.toFixed(4)} (reference)\n\n💰 Stake: $${STAKE_USD} | Hard SL: $${slDollars} | TP1: ${tp1.toFixed(4)} | TP2: ${tp2.toFixed(4)}\n📊 Risk: ${risk.toFixed(2)} points\n️ H4: ${h4Dir} ✅ Direction confirmed\n⚡ Setup: Strict Signal + Stateful TDI Engine (${state.activeEntryType})\n️ Confluence: ${bgaTag}\n━━━━━━━━━━━━━━━━━━━━\n🌍 *D1 CANDLE STATUS*\n━━━━━━━━━━━━━━━━━━━━\n`;
+    let message = `ðŸš¨ *${SYMBOL_NAME.toUpperCase()} CONFIRMED SIGNAL* ðŸš¨\n\nDirection: ${direction}\nRepo: ${REPO_LABEL}\nTimeframe: M5\n\nðŸ“ Entry: ${entry.toFixed(4)}\nðŸ›‘ SL: ${sl.toFixed(4)} ($${slDollars} hard)\nðŸŽ¯ TP1: ${tp1.toFixed(4)} (BGA Whole) â†’ trail with CCI zero-cross\nðŸŽ¯ TP2 (Ultimate TP): ${tp2.toFixed(4)} (BGA)\nðŸŽ¯ TP3: ${tp3.toFixed(4)} (reference)\n\nðŸ’° Stake: $${STAKE_USD} | Hard SL: $${slDollars} | TP1: ${tp1.toFixed(4)} | TP2: ${tp2.toFixed(4)}\nðŸ“Š Risk: ${risk.toFixed(2)} points\nï¸ H4: ${h4Dir} âœ… Direction confirmed\nâš¡ Setup: Strict Signal + Stateful TDI Engine (${state.activeEntryType})\nï¸ Confluence: ${bgaTag}\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\nðŸŒ *D1 CANDLE STATUS*\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n`;
     if (d1Ctx) message += `Direction: ${d1Ctx.direction}\nD1 Open: ${d1Ctx.open.toFixed(4)}\nD1 Current: ${d1Ctx.close.toFixed(4)}\nMovement: ${d1Ctx.change.toFixed(4)} pts (${d1Ctx.changePct.toFixed(2)}%)\nAlignment: ${alignment}\n\n`;
-    else message += `⚠️ D1 data unavailable\n\n`;
-    message += `⏰ Time (UTC): ${timeFormatted}\n\n💡 To close manually: send \`/close win\` or \`/close loss\` in this chat`;
+    else message += `âš ï¸ D1 data unavailable\n\n`;
+    message += `â° Time (UTC): ${timeFormatted}\n\nðŸ’¡ To close manually: send \`/close win\` or \`/close loss\` in this chat`;
 
     try {
       const contractId = await executeTrade(direction);
       if (!contractId) {
-        console.error("⚠️ Trade execution returned no contract ID. Skipping trade record.");
-        await sendTelegram(`❌ *${REPO_LABEL}*s\n\nSignal triggered for ${direction}, but live broker execution failed. Trade aborted.`);
+        console.error("âš ï¸ Trade execution returned no contract ID. Skipping trade record.");
+        await sendTelegram(`âŒ *${REPO_LABEL}*s\n\nSignal triggered for ${direction}, but live broker execution failed. Trade aborted.`);
         return;
       }
       await sendTelegram(message);
       trades.push({
         id: `${SYMBOL}-${isoTime}`, contractId, repo: REPO_LABEL, symbol: SYMBOL,
         direction, entry, sl, tp1, tp2, tp3, h1OpenAtEntry: null, tp1Reached: false,
-        peakProfit: null, rr: RISK_REWARD, openTime: timeFormatted, closeTime: null, result: null
+        peakProfit: null, rr: RISK_REWARD, entryType: state.activeEntryType, openTime: timeFormatted, closeTime: null, result: null
       });
       fs.writeFileSync("trades.json", JSON.stringify(trades, null, 2));
     } catch (execErr) {
-      console.error("⚠️ Live execution warning:", execErr.message);
-      await sendTelegram(`❌ *${REPO_LABEL}* — Live execution warning: ${execErr.message}`);
+      console.error("âš ï¸ Live execution warning:", execErr.message);
+      await sendTelegram(`âŒ *${REPO_LABEL}* â€” Live execution warning: ${execErr.message}`);
       return;
     }
 
@@ -1238,15 +1238,15 @@ async function runScanMode() {
   if (MODE === "close_win") { await executeManualClose("WIN", "manual command"); return; }
   if (MODE === "close_loss") { await executeManualClose("LOSS", "manual command"); return; }
   if (MODE === "test") {
-    await sendTelegram(`🧪 Test mode active — ${REPO_LABEL}\nFiring a direct BUY trade via proxy...\nCheck your Deriv account for a MULTUP contract.`);
+    await sendTelegram(`ðŸ§ª Test mode active â€” ${REPO_LABEL}\nFiring a direct BUY trade via proxy...\nCheck your Deriv account for a MULTUP contract.`);
     try {
       const cid = await executeTrade("BUY");
-      await sendTelegram(`✅ Test trade placed. Contract ID: ${cid}`);
+      await sendTelegram(`âœ… Test trade placed. Contract ID: ${cid}`);
     } catch (e) {
-      await sendTelegram(`❌ Test trade failed: ${e.message}`);
+      await sendTelegram(`âŒ Test trade failed: ${e.message}`);
     }
     return;
   }
-  if (TRIGGER_SOURCE !== "cronjob") { console.log("Not a cronjob trigger — exiting."); return; }
+  if (TRIGGER_SOURCE !== "cronjob") { console.log("Not a cronjob trigger â€” exiting."); return; }
   await runScanMode();
 })();
