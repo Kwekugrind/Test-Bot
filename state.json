@@ -5,9 +5,14 @@
   "lastTgUpdateId": 0,
   "h1TrendEpoch": null,
   "phaseATriggeredEpoch": null,
+  "phaseCTriggeredEpoch": null,
+  "phaseDTriggeredEpoch": null,
   "activeEntryType": null,
   "anticipatedTrend": null,
   "pendingPullback": null,
   "pullbackEpoch": null,
-  "pullbackTrigger": null
+  "pullbackTrigger": null,
+  "rsiLowerBreakSeen": false,
+  "rsiUpperBreakSeen": false,
+  "h1m15WasAligned": false
 }
